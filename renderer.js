@@ -1,4 +1,5 @@
 let qqdlTargetUrl = 'https://wolf.qqdl.site';
+let availableCloudApis = [];
 let isQqdlInitialized = false;
 
 async function initCloudTarget() {
@@ -7,12 +8,14 @@ async function initCloudTarget() {
         if (res.ok) {
             const data = await res.json();
             if (data && data.api && data.api.length > 0) {
-                qqdlTargetUrl = data.api[0].url;
-                console.log('QQDL Target resolved:', qqdlTargetUrl);
+                availableCloudApis = data.api.map(a => a.url);
+                qqdlTargetUrl = availableCloudApis[0];
+                console.log('QQDL Targets resolved:', availableCloudApis);
             }
         }
     } catch(e) {
         console.warn('Failed to fetch uptime worker, using default target', e);
+        availableCloudApis = [qqdlTargetUrl];
     }
     isQqdlInitialized = true;
 }
@@ -3171,20 +3174,66 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    async function resolveCloudTrackUrl(track) {
-        if (!track.isCloud) return track.url;
+    async function attemptResolve(apiUrl, trackId) {
         try {
-            const res = await fetch(`${qqdlTargetUrl}/track/?id=${track.cloudId}`);
-            if (!res.ok) throw new Error('Cloud track resolution failed');
+            const res = await fetch(`${apiUrl}/track/?id=${trackId}`);
+            if (!res.ok) return null;
             const data = await res.json();
-            const b64 = data.data.manifest;
-            const jsonStr = atob(b64);
-            const manifest = JSON.parse(jsonStr);
-            return manifest.urls[0];
+            if (!data) return null;
+
+            // 1. Direct URL check (Fast path)
+            if (data.url) return data.url;
+            if (data.data && data.data.url) return data.data.url;
+
+            // 2. Find the manifest field
+            let rawManifest = data.manifest || (data.data && data.data.manifest);
+            if (!rawManifest) return null;
+
+            // 3. Decode if it's a string (Base64), or use directly if it's an object
+            let manifest;
+            if (typeof rawManifest === 'string') {
+                try {
+                    const jsonStr = atob(rawManifest);
+                    manifest = JSON.parse(jsonStr);
+                } catch (e) {
+                    // Not base64 or not JSON, maybe it's just a direct URL string?
+                    if (rawManifest.startsWith('http')) return rawManifest;
+                    return null;
+                }
+            } else {
+                manifest = rawManifest; // Already a JSON object
+            }
+
+            // 4. Extract URL from manifest with fallback keys
+            if (!manifest) return null;
+            return manifest.url || (manifest.urls && manifest.urls[0]) || manifest.trackUrl || null;
+
         } catch(e) {
-            console.error('Failed to resolve cloud track', e);
+            console.warn(`Error resolving on ${apiUrl}:`, e);
             return null;
         }
+    }
+
+    async function resolveCloudTrackUrl(track) {
+        if (!track.isCloud) return track.url;
+        
+        // Try current target first
+        const resolved = await attemptResolve(qqdlTargetUrl, track.cloudId);
+        if (resolved) return resolved;
+
+        // If failed, try all other available APIs
+        console.warn(`Primary cloud API failing for track ${track.cloudId}, attempting rotation...`);
+        for (const api of availableCloudApis) {
+            if (api === qqdlTargetUrl) continue; // Already tried
+            const altResolved = await attemptResolve(api, track.cloudId);
+            if (altResolved) {
+                console.log(`Successfully rotated to working API: ${api}`);
+                qqdlTargetUrl = api; // Update global for next time
+                return altResolved;
+            }
+        }
+
+        return null;
     }
 
     async function playTrack(track, title, artist) {
