@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#f43f5e">
+    <title>SimonRelays</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+
+    <header class="app-header">
+        <div class="header-left">
+            <h1 class="logo">Simon<span class="logo-accent">Relays</span></h1>
+        </div>
+
+        <div class="header-center">
+            <button id="nav-home-btn" class="nav-circle-btn" title="Home">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 3l9 8h-3v8h-4v-6h-4v6H6v-8H3z"></path>
+                </svg>
+            </button>
+            <div class="search-container">
+                <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input type="text" id="search-input" class="search-input" placeholder="What do you want to play?">
+            </div>
+        </div>
+
+        <div class="header-right">
+            <div class="header-right-inner">
+                <button id="settings-btn" class="nav-circle-btn" title="Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                </button>
+                <div class="window-controls">
+                    <button class="win-btn" id="min-btn" title="Minimize">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    </button>
+                    <button class="win-btn" id="max-btn" title="Maximize">
+                        <svg id="max-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+                    </button>
+                    <button class="win-btn close-btn" id="close-btn" title="Close">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="app-wrapper">
+        <!-- Home View: Grid of Albums -->
+        <div id="home-view" class="view active" style="padding: 24px; padding-top: 40px;">
+            <div id="recent-songs-section" style="margin-bottom: 40px;">
+                <h2 class="section-heading" style="margin-bottom: 24px; font-size: 28px; font-weight: 800; color: white;">Recently Searched Songs</h2>
+                <div id="recent-song-list" class="album-row">
+                    <div style="color:var(--text-secondary); padding: 20px;">Search for music to see it here.</div>
+                </div>
+            </div>
+
+            <div id="recent-artists-section" style="margin-bottom: 40px;">
+                <h2 class="section-heading" style="margin-bottom: 24px; font-size: 28px; font-weight: 800; color: white;">Recently Played Artists</h2>
+                <div id="recent-artist-list" class="album-row">
+                    <div class="loading">Play a track to see history...</div>
+                </div>
+            </div>
+
+            <div id="playlists-section" style="margin-bottom: 40px;">
+                <h2 class="section-heading" style="margin-bottom: 24px; font-size: 28px; font-weight: 800; color: white;">Your Playlists</h2>
+                <div id="playlist-strip" class="album-row">
+                    <div class="loading">Loading playlists...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- All Albums View -->
+        <div id="all-albums-view" class="view hidden" style="padding: 24px; padding-top: 40px;">
+            <h2 class="section-heading" style="margin-bottom: 24px; font-size: 28px; font-weight: 800; color: white;">All Albums</h2>
+            <div id="album-grid" class="album-grid">
+                <div class="loading">Loading albums...</div>
+            </div>
+        </div>
+
+        <!-- All Artists View -->
+        <div id="all-artists-view" class="view hidden" style="padding: 24px; padding-top: 40px;">
+            <h2 class="section-heading" style="margin-bottom: 24px; font-size: 28px; font-weight: 800; color: white;">All Artists</h2>
+            <div id="all-artists-grid" class="album-grid">
+                <div class="loading">Loading artists...</div>
+            </div>
+        </div>
+
+        <!-- Playlist View -->
+        <div id="playlist-view" class="view hidden">
+            <div class="album-top-bar">
+                <button id="playlist-back-btn" class="nav-button">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="19" y1="12" x2="5" y2="12"></line>
+                        <polyline points="12 19 5 12 12 5"></polyline>
+                    </svg>
+                    Library
+                </button>
+            </div>
+            <div id="playlist-hero" class="album-hero">
+                <!-- JS injects collage + info here -->
+            </div>
+            <div class="app-container glass-panel">
+                <aside class="sidebar" style="width: 100%; border-right: none;">
+                    <div class="library">
+                        <h2>Tracks</h2>
+                        <div id="playlist-track-list" class="track-list"></div>
+                    </div>
+                </aside>
+            </div>
+        </div>
+
+        <!-- Search View -->
+        <div id="search-view" class="view hidden">
+            <!-- Mobile Dedicated Search Bar -->
+            <div class="mobile-search-bar">
+                <div class="search-container">
+                    <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    <input type="text" id="mobile-search-input" class="search-input" placeholder="Search tracks, artists, or albums...">
+                </div>
+            </div>
+
+            <!-- Artists Section -->
+            <div id="search-artists-section" class="search-section hidden">
+                <h2 class="search-section-heading">Artists</h2>
+                <div id="search-artist-list" class="search-entity-list"></div>
+            </div>
+
+            <!-- Playlists Section -->
+            <div id="search-playlists-section" class="search-section hidden">
+                <h2 class="search-section-heading">Playlists</h2>
+                <div id="search-playlist-list" class="search-entity-list"></div>
+            </div>
+
+            <!-- Songs Section -->
+            <div id="search-tracks-section" class="search-section hidden">
+                <h2 class="search-section-heading">Songs</h2>
+                <div id="search-track-list" class="track-list"></div>
+            </div>
+
+            <!-- Empty State -->
+            <div id="search-empty-state" class="search-empty-state hidden">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3;">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <div class="search-empty-text">No results found</div>
+                <div class="search-empty-sub">Try a different search term</div>
+            </div>
+        </div>
+
+
+        <!-- Album View -->
+        <div id="album-view" class="view hidden">
+            <div class="album-top-bar">
+                <button id="back-btn" class="nav-button">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="19" y1="12" x2="5" y2="12"></line>
+                        <polyline points="12 19 5 12 12 5"></polyline>
+                    </svg>
+                    Library
+                </button>
+            </div>
+            
+            <div id="album-hero" class="album-hero">
+                <!-- Javascript will inject hero metadata here -->
+            </div>
+            
+            <div class="app-container glass-panel">
+                <aside class="sidebar" style="width: 100%; border-right: none;">
+                    <div class="library">
+                        <h2>Tracks</h2>
+                        <div id="track-list" class="track-list"></div>
+                    </div>
+                </aside>
+            </div>
+        </div>
+        
+        <!-- Artist View -->
+        <div id="artist-view" class="view hidden">
+            <div class="album-top-bar">
+                <button id="artist-back-btn" class="nav-button">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="19" y1="12" x2="5" y2="12"></line>
+                        <polyline points="12 19 5 12 12 5"></polyline>
+                    </svg>
+                    Library
+                </button>
+            </div>
+            
+            <div id="artist-hero" class="album-hero">
+                <div class="artist-hero-avatar" style="width: 220px; height: 220px; border-radius: 50%; background: linear-gradient(135deg, var(--gradient-2), var(--gradient-1)); box-shadow: 0 16px 40px rgba(0,0,0,0.5); flex-shrink: 0;"></div>
+                <div class="album-hero-info">
+                    <div class="album-hero-label">Artist</div>
+                    <div id="artist-hero-name" class="album-hero-title">Artist Name</div>
+                    <div id="artist-hero-meta" class="album-hero-meta">0 tracks, 0 albums</div>
+                    <button id="artist-play-all-btn" class="icon-button play-btn" title="Play All" style="width: 56px; height: 56px; margin-top: 24px; box-shadow: 0 8px 16px rgba(0,0,0,0.4);">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M8 5v14l11-7z"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            
+            <div class="app-container glass-panel" style="flex-direction: column; overflow: hidden; padding: 24px; padding-bottom: 80px; overflow-y: auto;">
+                <h2 class="section-heading" style="font-size: 20px; text-transform: uppercase; font-weight: 800; margin-bottom: 16px; color: var(--accent);">Top Tracks</h2>
+                <div id="artist-track-list" class="track-list" style="max-height: 250px; overflow-y: auto; margin-bottom: 32px;"></div>
+                
+                <h2 id="artist-album-heading" class="section-heading" style="font-size: 20px; text-transform: uppercase; font-weight: 800; margin-bottom: 16px; color: var(--accent);">Albums</h2>
+                <div id="artist-album-grid" class="album-grid" style="margin-bottom: 32px;"></div>
+
+                <h2 id="artist-single-heading" class="section-heading" style="font-size: 20px; text-transform: uppercase; font-weight: 800; margin-bottom: 16px; color: var(--accent);">Singles / EPs</h2>
+                <div id="artist-single-grid" class="album-grid"></div>
+            </div>
+        </div>
+        
+        <!-- Immersive View -->
+        <div id="immersive-view" class="immersive-overlay hidden">
+            <div class="immersive-bg-wrapper">
+                <img id="immersive-bg" src="" alt="">
+                <div class="immersive-bg-dimmer"></div>
+            </div>
+
+            <div class="immersive-controls-top">
+                <button id="toggle-art-btn" class="immersive-control-btn" title="Toggle Album Art">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                </button>
+                <button id="close-immersive-btn" class="close-immersive-btn" title="Close Fullscreen">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="immersive-content">
+                <div class="immersive-left">
+                    <img id="immersive-art" src="" alt="Album Art" class="immersive-art">
+                    <div class="immersive-info">
+                        <div id="immersive-title" class="immersive-title"></div>
+                        <div id="immersive-artist" class="immersive-artist"></div>
+                    </div>
+                </div>
+                <div class="immersive-right">
+                    <div id="immersive-lyrics-container" class="lyrics-container immersive-lyrics">
+                        <!-- Lyrics populate here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Queue View -->
+        <div id="queue-view" class="view hidden" style="display: flex; flex-direction: column; overflow: hidden; padding-bottom: 100px; z-index: 50; background: var(--bg-color, #0a0a0f);">
+            <div class="search-header-text" style="margin-bottom: 24px;">Queue</div>
+            <div class="app-container glass-panel" style="flex-direction: column; overflow: hidden; padding: 24px; flex: 1; min-height: 0;">
+                
+                <h2 class="section-heading" style="font-size: 16px; text-transform: uppercase; font-weight: 800; margin-bottom: 12px; color: var(--accent); flex-shrink: 0;">Now Playing</h2>
+                <div id="queue-now-playing" class="track-list" style="margin-bottom: 24px; flex-shrink: 0;"></div>
+                
+                <div id="queue-user-section" style="display: none; flex-direction: column; flex-shrink: 0; margin-bottom: 24px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                        <h2 class="section-heading" style="font-size: 16px; text-transform: uppercase; font-weight: 800; margin: 0; color: white;">Next in Queue</h2>
+                        <button id="queue-clear-btn" style="background: transparent; border: 1px solid rgba(255,255,255,0.2); color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: 700; cursor: pointer; transition: background 0.2s;">Clear</button>
+                    </div>
+                    <div id="queue-user-list" class="track-list" style="max-height: 250px; overflow-y: auto;"></div>
+                </div>
+                
+                <h2 class="section-heading" style="font-size: 14px; text-transform: uppercase; font-weight: 700; margin-bottom: 12px; color: var(--text-secondary); flex-shrink: 0;">Next From Source</h2>
+                <div id="queue-context-list" class="track-list" style="flex: 1; overflow-y: auto; padding-right: 8px;"></div>
+            </div>
+        </div>
+
+        <!-- Settings Overlay -->
+        <div id="settings-view" class="settings-overlay">
+            <div class="settings-header">
+                <div class="settings-header-left">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6;">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                    <h2 class="settings-title">Settings</h2>
+                </div>
+                <button id="settings-close-btn" class="settings-close-btn" title="Close Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="settings-body">
+                <!-- Settings content will go here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- GLOBAL BOTTOM PLAYER BAR -->
+    <footer id="bottom-player-bar" class="player-bar">
+        <div class="player-left">
+            <div class="bottom-art-wrapper" id="bottom-art"></div>
+            <div class="bottom-song-info">
+                <div class="bottom-title" id="bottom-title">Select a track</div>
+                <div class="bottom-artist" id="bottom-artist">-</div>
+            </div>
+            <button id="bottom-offline-btn" class="icon-button bottom-offline-btn offline-status-circle" style="margin-left:8px;" title="Offline Status">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path class="check-path" d="M8 12.5l3 3 5-6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+            </button>
+        </div>
+
+        <div class="player-center">
+            <div class="player-controls">
+                <button id="shuffle-btn" class="icon-button" title="Shuffle">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"></path>
+                    </svg>
+                </button>
+                <button id="prev-btn" class="icon-button" title="Previous">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"></path>
+                    </svg>
+                </button>
+                <button id="play-pause-btn" class="icon-button play-btn" title="Play">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path id="play-icon" d="M8 5v14l11-7z"></path>
+                    </svg>
+                </button>
+                <button id="next-btn" class="icon-button" title="Next">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6z"></path>
+                    </svg>
+                </button>
+                <button id="repeat-btn" class="icon-button" title="Repeat">
+                    <svg id="repeat-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="17 1 21 5 17 9"></polyline>
+                        <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                        <polyline points="7 23 3 19 7 15"></polyline>
+                        <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="playback-bar">
+                <span id="current-time" class="playback-time">0:00</span>
+                <div id="progress-bar-container" class="progress-bar">
+                    <div id="hover-tooltip" class="hover-tooltip" style="opacity: 0;">0:00</div>
+                    <div id="progress-fill" class="progress-fill" style="width: 0%;"></div>
+                </div>
+                <span id="total-time" class="playback-time">0:00</span>
+            </div>
+        </div>
+
+        <div class="player-right">
+            <button id="queue-btn" class="icon-button" title="Queue">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="8" y1="6" x2="21" y2="6"></line>
+                    <line x1="8" y1="12" x2="21" y2="12"></line>
+                    <line x1="8" y1="18" x2="21" y2="18"></line>
+                    <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                    <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                    <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                </svg>
+            </button>
+            <button class="icon-button" title="Connect">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
+                    <circle cx="12" cy="14" r="4"></circle>
+                    <line x1="12" y1="6" x2="12.01" y2="6"></line>
+                </svg>
+            </button>
+            <div class="volume-container">
+                <button id="mute-btn" class="icon-button" title="Mute">
+                    <svg id="mute-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <!-- Volume On state by default -->
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                    </svg>
+                </button>
+                <div id="volume-bar-container" class="volume-bar">
+                    <div id="volume-fill" class="volume-fill" style="width: 70%;"></div>
+                </div>
+            </div>
+            <button id="expand-immersive-btn" class="icon-button" title="Immersive Mode" style="margin-left: 12px;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 3 21 3 21 9"></polyline>
+                    <polyline points="9 21 3 21 3 15"></polyline>
+                    <line x1="21" y1="3" x2="14" y2="10"></line>
+                    <line x1="3" y1="21" x2="10" y2="14"></line>
+                </svg>
+            </button>
+        </div>
+        
+        <audio id="audio-player" style="display:none;"></audio>
+    </footer>
+
+    <!-- Create Playlist Modal -->
+    <div id="create-playlist-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel">
+            <h2 class="modal-title">New Playlist</h2>
+            <input id="playlist-name-input" class="playlist-name-input" type="text" placeholder="Give it a name..." maxlength="60">
+            <div class="modal-actions">
+                <button id="create-playlist-cancel-btn" class="modal-btn ghost-btn">Cancel</button>
+                <button id="create-playlist-confirm-btn" class="modal-btn primary-btn">Create</button>
+            </div>
+        </div>
+    </div>
+
+        </div>
+    </div>
+
+    <!-- Edit Metadata Modal -->
+    <div id="edit-metadata-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel metadata-modal">
+            <h2 id="metadata-modal-title" class="modal-title">Edit Song Info</h2>
+            <div class="metadata-editor-layout">
+                <div class="metadata-editor-left">
+                    <div id="metadata-art-dropzone" class="metadata-art-dropzone">
+                        <img id="metadata-art-preview" src="" alt="">
+                        <div class="dropzone-overlay">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                            <span>Change Cover</span>
+                        </div>
+                        <input type="file" id="metadata-art-input" hidden accept="image/*">
+                    </div>
+                    <button id="metadata-restore-btn" class="modal-btn ghost-btn restore-btn hidden" title="Restore from backup">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 2v6h6"></path><path d="M3 13a9 9 0 1 0 3-7.7L3 8"></path></svg>
+                        Restore Original
+                    </button>
+                </div>
+                <div class="metadata-editor-right">
+                    <div class="input-group">
+                        <label>Title</label>
+                        <input type="text" id="metadata-title-input" placeholder="Title">
+                    </div>
+                    <div class="input-group">
+                        <label>Artist</label>
+                        <input type="text" id="metadata-artist-input" placeholder="Artist">
+                    </div>
+                    <div class="input-group">
+                        <label>Album</label>
+                        <input type="text" id="metadata-album-input" placeholder="Album">
+                    </div>
+                    <div class="input-group">
+                        <label>Year</label>
+                        <input type="number" id="metadata-year-input" placeholder="Year">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="metadata-cancel-btn" class="modal-btn ghost-btn">Cancel</button>
+                <button id="metadata-save-btn" class="modal-btn primary-btn">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Context Menu Dropdown -->
+    <div id="track-context-menu" class="context-menu hidden">
+        <button id="menu-edit-btn" class="menu-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+            Edit Info
+        </button>
+        <button id="menu-playlist-btn" class="menu-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            Add to Playlist
+        </button>
+    </div>
+
+    <!-- Add to Playlist Dropdown (shared, repositioned by JS) -->
+    <div id="add-to-playlist-dropdown" class="add-to-playlist-dropdown hidden"></div>
+
+    <!-- Dependency Installation Modal -->
+    <div id="dependency-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel">
+            <h2 class="modal-title">Unsupported Format</h2>
+            <p class="modal-text">This audio is in an AAC format (e.g. M4A), which requires additional dependencies for playback. Would you like to install them now?</p>
+            <div class="modal-actions">
+                <button id="modal-cancel-btn" class="modal-btn ghost-btn">Cancel</button>
+                <button id="modal-install-btn" class="modal-btn primary-btn">Install</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile Bottom Navigation Bar -->
+    <nav class="mobile-bottom-nav">
+        <button id="mobile-home-btn" class="nav-item active" title="Home">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 3l9 8h-3v8h-4v-6h-4v6H6v-8H3z"></path>
+            </svg>
+            <span>Home</span>
+        </button>
+        <button id="mobile-search-btn" class="nav-item" title="Search">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <span>Search</span>
+        </button>
+        <button id="mobile-settings-btn" class="nav-item" title="Settings">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+            <span>Settings</span>
+        </button>
+    </nav>
+
+    <script src="renderer.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then(reg => console.log('PWA Service Worker registered!', reg))
+                    .catch(err => console.error('PWA SW failed:', err));
+            });
+        }
+    </script>
+</body>
+</html>

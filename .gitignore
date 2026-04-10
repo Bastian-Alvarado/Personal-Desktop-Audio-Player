@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+out/
+build/
+.git/
+# Electron specific
+*.unrecognized
