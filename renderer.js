@@ -289,6 +289,111 @@ document.addEventListener('DOMContentLoaded', async () => {
     let activePlaylistId = null;
     let pendingAddTrack = null;
     let createPlaylistCallback = null;
+    let lastSearchController = null;
+    let artistSearchController = null;
+    let dashActive = false;
+    
+    // --- View Caching (Persistent) ---
+    const VIEW_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+    function getPersistedCache(key) {
+        try {
+            const data = JSON.parse(localStorage.getItem(key) || '{}');
+            const now = Date.now();
+            let changed = false;
+            Object.keys(data).forEach(id => {
+                if (!data[id].timestamp || (now - data[id].timestamp > VIEW_CACHE_TTL)) {
+                    delete data[id];
+                    changed = true;
+                }
+            });
+            if (changed) localStorage.setItem(key, JSON.stringify(data));
+            return data;
+        } catch(e) { return {}; }
+    }
+    function updatePersistedCache(key, id, value) {
+        try {
+            const cache = JSON.parse(localStorage.getItem(key) || '{}');
+            cache[id] = { data: value, timestamp: Date.now() };
+            // Simple pruning if cache gets too big (> 50 items)
+            const keys = Object.keys(cache);
+            if (keys.length > 50) {
+                delete cache[keys[0]];
+            }
+            localStorage.setItem(key, JSON.stringify(cache));
+            
+            // Sync local refs
+            if (key === 'artistViewCache') artistViewCache = cache;
+            if (key === 'albumViewCache') albumViewCache = cache;
+            
+            return cache;
+        } catch(e) { return {}; }
+    }
+
+    let artistViewCache = getPersistedCache('artistViewCache');
+    let albumViewCache = getPersistedCache('albumViewCache');
+
+    // --- DASH Player State ---
+    let shakaLibLoaded = false;
+    let shakaPlayerInstance = null;
+
+    async function ensureDashPlayer() {
+        if (shakaLibLoaded) return true;
+        console.log("Loading Shaka Player for DASH stream support...");
+        return new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.5/shaka-player.compiled.js';
+            script.onload = async () => {
+                shakaLibLoaded = true;
+                shaka.polyfill.installAll();
+                if (shaka.Player.isBrowserSupported()) {
+                    shakaPlayerInstance = new shaka.Player(audioPlayer);
+                    shakaPlayerInstance.addEventListener('error', (event) => {
+                        console.error('Shaka Player error', event.detail);
+                    });
+                    resolve(true);
+                } else {
+                    reject(new Error('Browser not supported for DASH.'));
+                }
+            };
+            script.onerror = () => reject(new Error('Failed to load Shaka Player.'));
+            document.head.appendChild(script);
+        });
+    }
+
+    async function playDashStream(manifest) {
+        try {
+            await ensureDashPlayer();
+            // If manifest is XML, we can load it as a data URL, 
+            // but these Tidal manifests often work best when passed as a string via a specific protocol or blob
+            // Actually, Shaka can load from a manifest string if we use a plugin, 
+            // but the simplest way is to pass the base64 data URL if it's base64, 
+            // or a Blob URL if it's XML string.
+            
+            let manifestUrl;
+            if (manifest.trim().startsWith('<?xml') || manifest.trim().startsWith('<MPD')) {
+                const blob = new Blob([manifest], { type: 'application/dash+xml' });
+                manifestUrl = URL.createObjectURL(blob);
+            } else {
+                // Assume base64
+                manifestUrl = `data:application/dash+xml;base64,${manifest}`;
+            }
+
+            await shakaPlayerInstance.load(manifestUrl);
+            audioPlayer.play().catch(e => console.error("Initial DASH play failed", e));
+        } catch (e) {
+            console.error('Error in playDashStream:', e);
+            alert("Failed to play DASH stream: " + e.message);
+        }
+    }
+
+    async function destroyDashPlayer() {
+        if (shakaPlayerInstance) {
+            await shakaPlayerInstance.detach();
+            await shakaPlayerInstance.destroy();
+            shakaPlayerInstance = null;
+            shakaLibLoaded = false; // Re-load to clean state
+        }
+    }
     let userQueue = [];
     let downloadedTracksMap = new Map(); // url -> localPath
     let pendingDownloads = new Map(); // url -> progress
@@ -1936,6 +2041,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (push) navigateTo('album', { albumInfo });
         switchToAlbumView(false);
 
+        // Use cached version if available
+        if (albumInfo.isCloudGenerated && !albumInfo.isFullyPopulated && albumInfo.albumId) {
+            const cachedAlbum = albumViewCache[albumInfo.albumId];
+            const now = Date.now();
+            if (cachedAlbum && (now - cachedAlbum.timestamp < VIEW_CACHE_TTL)) {
+                albumInfo.tracks = cachedAlbum.data.tracks;
+                albumInfo.isFullyPopulated = true;
+                console.log(`Album ${albumInfo.name} loaded from persistent cache`);
+            }
+        }
+
         // Use precise /album/?id= endpoint for cloud albums with a known Tidal album ID
         if (albumInfo.isCloudGenerated && !albumInfo.isFullyPopulated && albumInfo.albumId) {
             document.getElementById('track-list').innerHTML = '<div class="loading" style="padding: 24px; color: var(--text-secondary);">Loading full tracklist...</div>';
@@ -1944,7 +2060,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const res = await fetch(`${qqdlTargetUrl}/album/?id=${albumInfo.albumId}`);
                 if (res.ok) {
                     const data = await res.json();
-                    // The /album/ endpoint returns { data: { items: [...] } } where each item has an 'item' sub-key
                     const rawItems = (data && data.data && data.data.items) ? data.data.items : [];
                     
                     albumInfo.tracks = rawItems.map(entry => {
@@ -1967,6 +2082,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }).filter(t => t.cloudId);
                     
                     albumInfo.isFullyPopulated = true;
+                    updatePersistedCache('albumViewCache', albumInfo.albumId, albumInfo);
                 }
             } catch (e) {
                 console.error('Failed to load album tracks via /album/ endpoint:', e);
@@ -2283,7 +2399,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         artistHeroName.textContent = artistName;
         artistHeroMeta.textContent = 'Loading artist...';
 
-        // Render Hero Image (may already be cached from search)
         const heroAvatarNode = document.querySelector('.artist-hero-avatar');
         if (heroAvatarNode) {
             heroAvatarNode.innerHTML = '';
@@ -2296,41 +2411,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         const singleHeading = document.getElementById('artist-single-heading');
         const albumHeading = document.getElementById('artist-album-heading');
 
+        // Check Cache
+        const cached = artistViewCache[artistName];
+        const now = Date.now();
+        if (cached && (now - cached.timestamp < VIEW_CACHE_TTL)) {
+            console.log(`Rendering ${artistName} from persistent cache`);
+            renderArtistProfile(artistName, cached.data);
+            return;
+        }
+
         artistAlbumGrid.innerHTML = '<div class="loading" style="padding: 24px; color: var(--text-secondary);">Fetching discography...</div>';
         artistTrackList.innerHTML = '<div class="loading" style="padding: 24px; color: var(--text-secondary);">Fetching top tracks...</div>';
         if (artistSingleGrid) artistSingleGrid.innerHTML = '';
 
         try {
-            // Step 1: Get the artist ID using a search query
             const searchRes = await fetch(`${qqdlTargetUrl}/search/?s=${encodeURIComponent(artistName)}`);
             if (!searchRes.ok) throw new Error('Search failed');
             const searchData = await searchRes.json();
             const searchTracks = (searchData && searchData.data && searchData.data.items) ? searchData.data.items : [];
-
-            // Find the first track whose artist matches exactly
             const matchTrack = searchTracks.find(t => t.artist && t.artist.name.toLowerCase() === artistName.toLowerCase());
             if (!matchTrack) throw new Error('Artist not found in search results');
 
             const artistId = matchTrack.artist.id;
-
-            // Cache the picture hash from search
             if (matchTrack.artist.picture) {
                 window.artistImageHashes[matchTrack.artist.name] = matchTrack.artist.picture;
-                // Re-trigger image now that we have the hash
                 if (typeof fetchAndApplyArtistImage === 'function' && heroAvatarNode) {
-                    // Reset cache so it re-resolves with the new hash
                     delete artistImageCache[artistName];
                     fetchAndApplyArtistImage(artistName, heroAvatarNode, true);
                 }
             }
 
-            // Step 2 (parallel): Fetch top tracks from search + full discography from /artist/?f=
             const [discRes, topTracksFromSearch] = await Promise.all([
                 fetch(`${qqdlTargetUrl}/artist/?f=${artistId}&skip_tracks=true`).catch(() => null),
                 Promise.resolve(searchTracks)
             ]);
 
-            // Build top tracks list from search results (already have them)
             const artistTopTracks = topTracksFromSearch
                 .filter(t => t.artist && t.artist.name.toLowerCase() === artistName.toLowerCase())
                 .map(t => ({
@@ -2348,106 +2463,106 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }));
 
-            // Step 3: Parse full discography
             const finalAlbums = [];
             const finalSingles = [];
 
             if (discRes && discRes.ok) {
                 const discData = await discRes.json().catch(() => ({}));
                 const allReleases = (discData && discData.albums && discData.albums.items) ? discData.albums.items : [];
-
                 allReleases.forEach(album => {
                     const albumObj = {
                         name: album.title,
                         artist: artistName,
-                        albumId: album.id,  // Store the real Tidal album ID for lazy loading
-                        coverTrackPath: null,
+                        albumId: album.id,
                         coverUrl: album.cover ? getTidalImage(album.cover, '320x320') : null,
-                        tracks: [],  // Will be populated when user opens the album
-                        addedAt: Date.now(),
+                        tracks: [],
                         isCloudGenerated: true,
                         isFullyPopulated: false
                     };
-
-                    // Use the API's native type field — far more reliable than heuristics
                     const type = (album.type || '').toUpperCase();
-                    if (type === 'SINGLE' || type === 'EP') {
-                        finalSingles.push(albumObj);
-                    } else {
-                        finalAlbums.push(albumObj);
-                    }
+                    if (type === 'SINGLE' || type === 'EP') finalSingles.push(albumObj);
+                    else finalAlbums.push(albumObj);
                 });
             }
 
-            // Render top tracks
-            artistHeroMeta.textContent = `${artistTopTracks.length} top tracks · ${finalAlbums.length} album${finalAlbums.length !== 1 ? 's' : ''} · ${finalSingles.length} single${finalSingles.length !== 1 ? 's' : ''}`;
-
-            if (artistTopTracks.length > 0) {
-                artistTrackList.innerHTML = '';
-                renderTrackList(artistTopTracks, artistTrackList);
-            } else {
-                artistTrackList.innerHTML = '<div style="color:var(--text-secondary); padding: 24px;">No top tracks found.</div>';
-            }
-
-            // Shared card builder
-            function populateGrid(container, items) {
-                container.innerHTML = '';
-                items.forEach(albumInfo => {
-                    const card = document.createElement('div');
-                    card.className = 'album-card';
-                    let coverHtml = `<div class="album-card-art"></div>`;
-                    if (albumInfo.coverUrl) {
-                        coverHtml = `<img src="${albumInfo.coverUrl}" class="album-card-art" alt="Album Cover" crossorigin="anonymous">`;
-                    }
-                    card.innerHTML = `
-                        <div class="card-art-wrapper">
-                            ${coverHtml}
-                            ${CARD_PLAY_BTN_HTML}
-                        </div>
-                        <div class="album-card-title">${albumInfo.name}</div>
-                        <div class="album-card-artist">${albumInfo.artist}</div>
-                    `;
-                    card.querySelector('.card-play-btn').addEventListener('click', async (e) => {
-                        e.stopPropagation();
-                        // Pre-load if empty before immediately playing
-                        if (albumInfo.tracks.length === 0 && albumInfo.albumId) {
-                            try {
-                                const r = await fetch(`${qqdlTargetUrl}/album/?id=${albumInfo.albumId}`);
-                                if (r.ok) {
-                                    const d = await r.json();
-                                    const items = (d && d.data && d.data.items) ? d.data.items : [];
-                                    albumInfo.tracks = items.map(entry => {
-                                        const t = entry.item || entry;
-                                        return { url: `qqdl://${t.id}`, localPath: '', isCloud: true, cloudId: t.id, filename: t.title, metadata: { title: t.title, artist: t.artist ? t.artist.name : albumInfo.artist, album: albumInfo.name, duration: t.duration, coverUrl: albumInfo.coverUrl } };
-                                    }).filter(t => t.cloudId);
-                                    albumInfo.isFullyPopulated = true;
-                                }
-                            } catch(err) { console.error(err); }
-                        }
-                        if (albumInfo.tracks.length === 0) return;
-                        currentPlaylistContext = albumInfo.tracks;
-                        if (isShuffleActive) unplayedIndices = albumInfo.tracks.map((_, i) => i);
-                        commitTrackChange(0);
-                    });
-                    card.addEventListener('click', () => openAlbumView(albumInfo));
-                    container.appendChild(card);
-                });
-            }
-
-            populateGrid(artistAlbumGrid, finalAlbums);
-            if (artistSingleGrid) populateGrid(artistSingleGrid, finalSingles);
-
-            if (albumHeading) albumHeading.style.display = finalAlbums.length > 0 ? 'block' : 'none';
-            artistAlbumGrid.style.display = finalAlbums.length > 0 ? 'grid' : 'none';
-            if (singleHeading) singleHeading.style.display = finalSingles.length > 0 ? 'block' : 'none';
-            if (artistSingleGrid) artistSingleGrid.style.display = finalSingles.length > 0 ? 'grid' : 'none';
+            const artistData = { artistTopTracks, finalAlbums, finalSingles };
+            updatePersistedCache('artistViewCache', artistName, artistData);
+            renderArtistProfile(artistName, artistData);
 
         } catch (e) {
             console.error('Failed to fetch artist profile:', e);
             artistTrackList.innerHTML = '<div style="color:red; padding: 24px;">Failed to load artist data.</div>';
-            artistAlbumGrid.innerHTML = '';
             artistHeroMeta.textContent = 'Error loading artist';
         }
+    }
+
+    function renderArtistProfile(artistName, data) {
+        const { artistTopTracks, finalAlbums, finalSingles } = data;
+        const artistSingleGrid = document.getElementById('artist-single-grid');
+        const singleHeading = document.getElementById('artist-single-heading');
+        const albumHeading = document.getElementById('artist-album-heading');
+
+        artistHeroMeta.textContent = `${artistTopTracks.length} top tracks · ${finalAlbums.length} album${finalAlbums.length !== 1 ? 's' : ''} · ${finalSingles.length} single${finalSingles.length !== 1 ? 's' : ''}`;
+
+        if (artistTopTracks.length > 0) {
+            artistTrackList.innerHTML = '';
+            renderTrackList(artistTopTracks, artistTrackList);
+        } else {
+            artistTrackList.innerHTML = '<div style="color:var(--text-secondary); padding: 24px;">No top tracks found.</div>';
+        }
+
+        function populateGrid(container, items) {
+            container.innerHTML = '';
+            items.forEach(albumInfo => {
+                const card = document.createElement('div');
+                card.className = 'album-card';
+                let coverHtml = `<div class="album-card-art"></div>`;
+                if (albumInfo.coverUrl) {
+                    coverHtml = `<img src="${albumInfo.coverUrl}" class="album-card-art" alt="Album Cover" crossorigin="anonymous">`;
+                }
+                card.innerHTML = `
+                    <div class="card-art-wrapper">
+                        ${coverHtml}
+                        ${CARD_PLAY_BTN_HTML}
+                    </div>
+                    <div class="album-card-title">${albumInfo.name}</div>
+                    <div class="album-card-artist">${albumInfo.artist}</div>
+                `;
+                card.querySelector('.card-play-btn').addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (albumInfo.tracks.length === 0 && albumInfo.albumId) {
+                        try {
+                            const r = await fetch(`${qqdlTargetUrl}/album/?id=${albumInfo.albumId}`);
+                            if (r.ok) {
+                                const d = await r.json();
+                                const items = (d && d.data && d.data.items) ? d.data.items : [];
+                                albumInfo.tracks = items.map(entry => {
+                                    const t = entry.item || entry;
+                                    return { url: `qqdl://${t.id}`, localPath: '', isCloud: true, cloudId: t.id, filename: t.title, metadata: { title: t.title, artist: t.artist ? t.artist.name : albumInfo.artist, album: albumInfo.name, duration: t.duration, coverUrl: albumInfo.coverUrl } };
+                                }).filter(t => t.cloudId);
+                                albumInfo.isFullyPopulated = true;
+                                // Update album cache if available
+                                updatePersistedCache('albumViewCache', albumInfo.albumId, albumInfo);
+                            }
+                        } catch(err) { console.error(err); }
+                    }
+                    if (albumInfo.tracks.length === 0) return;
+                    currentPlaylistContext = albumInfo.tracks;
+                    if (isShuffleActive) unplayedIndices = albumInfo.tracks.map((_, i) => i);
+                    commitTrackChange(0);
+                });
+                card.addEventListener('click', () => openAlbumView(albumInfo));
+                container.appendChild(card);
+            });
+        }
+
+        populateGrid(artistAlbumGrid, finalAlbums);
+        if (artistSingleGrid) populateGrid(artistSingleGrid, finalSingles);
+
+        if (albumHeading) albumHeading.style.display = finalAlbums.length > 0 ? 'block' : 'none';
+        artistAlbumGrid.style.display = finalAlbums.length > 0 ? 'grid' : 'none';
+        if (singleHeading) singleHeading.style.display = finalSingles.length > 0 ? 'block' : 'none';
+        if (artistSingleGrid) artistSingleGrid.style.display = finalSingles.length > 0 ? 'grid' : 'none';
     }
 
     function parseLrc(lrcString) {
@@ -3182,8 +3297,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!data) return null;
 
             // 1. Direct URL check (Fast path)
-            if (data.url) return data.url;
-            if (data.data && data.data.url) return data.data.url;
+            let directUrl = data.url || (data.data && data.data.url);
+            if (directUrl) return { url: directUrl, isDash: false };
 
             // 2. Find the manifest field
             let rawManifest = data.manifest || (data.data && data.data.manifest);
@@ -3191,13 +3306,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 3. Decode if it's a string (Base64), or use directly if it's an object
             let manifest;
+            let isDash = (data.data && data.data.manifestMimeType === 'application/dash+xml');
+
             if (typeof rawManifest === 'string') {
                 try {
-                    const jsonStr = atob(rawManifest);
-                    manifest = JSON.parse(jsonStr);
+                    const decoded = atob(rawManifest);
+                    if (decoded.trim().startsWith('<?xml') || decoded.trim().startsWith('<MPD')) {
+                        isDash = true;
+                        manifest = decoded; // Keep XML string
+                    } else {
+                        manifest = JSON.parse(decoded);
+                    }
                 } catch (e) {
                     // Not base64 or not JSON, maybe it's just a direct URL string?
-                    if (rawManifest.startsWith('http')) return rawManifest;
+                    if (rawManifest.startsWith('http')) return { url: rawManifest, isDash: false };
                     return null;
                 }
             } else {
@@ -3206,7 +3328,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 4. Extract URL from manifest with fallback keys
             if (!manifest) return null;
-            return manifest.url || (manifest.urls && manifest.urls[0]) || manifest.trackUrl || null;
+
+            if (isDash) {
+                // Return the raw base64 or XML for dash-player to handle later
+                return { url: rawManifest, isDash: true };
+            }
+
+            const manifestUrl = manifest.url || (manifest.urls && manifest.urls[0]) || manifest.trackUrl || null;
+            return manifestUrl ? { url: manifestUrl, isDash: false } : null;
 
         } catch(e) {
             console.warn(`Error resolving on ${apiUrl}:`, e);
@@ -3217,20 +3346,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function resolveCloudTrackUrl(track) {
         if (!track.isCloud) return track.url;
         
-        // Try current target first
-        const resolved = await attemptResolve(qqdlTargetUrl, track.cloudId);
-        if (resolved) return resolved;
+        const tryAPIs = [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl)];
+        let firstDashFound = null;
 
-        // If failed, try all other available APIs
-        console.warn(`Primary cloud API failing for track ${track.cloudId}, attempting rotation...`);
-        for (const api of availableCloudApis) {
-            if (api === qqdlTargetUrl) continue; // Already tried
-            const altResolved = await attemptResolve(api, track.cloudId);
-            if (altResolved) {
-                console.log(`Successfully rotated to working API: ${api}`);
-                qqdlTargetUrl = api; // Update global for next time
-                return altResolved;
+        for (const api of tryAPIs) {
+            // Priority 1: Current quality (usually HI_RES/DEFAULT)
+            const result = await attemptResolve(api, track.cloudId);
+            
+            if (result) {
+                if (!result.isDash) {
+                    qqdlTargetUrl = api; // Update global if successful non-dash
+                    return result.url;
+                } else if (!firstDashFound) {
+                    firstDashFound = { api, ...result };
+                }
             }
+
+            // Priority 2: Quality fallback to avoid DASH
+            // Try LOSSLESS and then HIGH which often return JSON BTS manifests
+            const qualities = ['LOSSLESS', 'HIGH'];
+            for (const q of qualities) {
+                const qResult = await attemptResolve(api, `${track.cloudId}&q=${q}`);
+                if (qResult && !qResult.isDash) {
+                    console.log(`Successfully found non-DASH stream using quality ${q} on ${api}`);
+                    qqdlTargetUrl = api;
+                    return qResult.url;
+                }
+            }
+        }
+
+        // Priority 3: Accept DASH if no standard stream found
+        if (firstDashFound) {
+            console.log(`All quality fallbacks failed. Proceeding with DASH playback from ${firstDashFound.api}`);
+            qqdlTargetUrl = firstDashFound.api;
+            return { dashManifest: firstDashFound.url };
         }
 
         return null;
@@ -3243,14 +3392,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         globalPlayingTrack = track;
 
         let fullAudioUrl = track.url;
+        let isWaitingForDash = false;
         
         if (track.isCloud && track.url.startsWith('qqdl://')) {
             const resolved = await resolveCloudTrackUrl(track);
             if (resolved) {
-                fullAudioUrl = resolved;
+                if (typeof resolved === 'object' && resolved.dashManifest) {
+                    isWaitingForDash = true;
+                    dashActive = true;
+                    // We don't return here, we still want to update UI components below
+                    playDashStream(resolved.dashManifest);
+                } else {
+                    if (dashActive) {
+                        await destroyDashPlayer();
+                        dashActive = false;
+                    }
+                    fullAudioUrl = resolved;
+                }
             } else {
                 alert("Failed to resolve cloud stream.");
                 return;
+            }
+        } else {
+            // Local track or non-qqdl cloud - ensure DASH is off
+            if (dashActive) {
+                await destroyDashPlayer();
+                dashActive = false;
             }
         }
 
@@ -3320,8 +3487,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         updateMediaSession(track);
 
-        audioPlayer.src = fullAudioUrl;
-        audioPlayer.play().catch(e => console.error("Auto-play blocked/failed", e));
+        if (!isWaitingForDash) {
+            audioPlayer.src = fullAudioUrl;
+            audioPlayer.play().catch(e => console.error("Auto-play blocked/failed", e));
+        }
     }
 
     function updateMediaSession(track) {
@@ -3583,7 +3752,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         await Promise.all([
             fetchPlaylists(),
-            initializeMusicLibrary()
+            initializeMusicLibrary(),
+            ensureDashPlayer().catch(e => console.warn("Background Shaka preload failed", e))
         ]);
 
         // Auto-rescan check (24-hour interval)
