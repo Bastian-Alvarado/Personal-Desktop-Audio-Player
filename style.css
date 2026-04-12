@@ -1574,12 +1574,18 @@ body {
     .player-right {
         display: contents; /* Allow global ordering of children */
     }
-    .player-right .icon-button[title="Connect"],
     .player-right .volume-container,
     .player-right #mute-btn,
     .player-right .volume-bar,
     .player-right #expand-immersive-btn {
         display: none !important;
+    }
+
+    #device-btn {
+        display: flex !important;
+        order: 30;
+        margin-right: 12px;
+        color: white;
     }
 
     #queue-btn { display: none !important; }

@@ -22,5 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     selectDirectory: () => ipcRenderer.invoke('select-directory'),
 
     // Cloud Upload
-    uploadTrack: (data) => ipcRenderer.invoke('upload-track-to-server', data)
+    uploadTrack: (data) => ipcRenderer.invoke('upload-track-to-server', data),
+
+    // Tailscale Remote WebSockets
+    remoteBroadcastState: (data) => ipcRenderer.send('remote-broadcast-state', data),
+    onRemoteCommand: (callback) => ipcRenderer.on('remote-incoming-command', (event, data) => callback(data))
 });

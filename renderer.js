@@ -1140,6 +1140,26 @@ document.addEventListener('DOMContentLoaded', async () => {
                 renderSettingsPanel();
             });
         });
+
+        // Tailscale Remote handlers
+        const tailscaleConnectBtn = document.getElementById('tailscale-connect-btn');
+        const tailscaleDisconnectBtn = document.getElementById('tailscale-disconnect-btn');
+        if (tailscaleConnectBtn) {
+            tailscaleConnectBtn.addEventListener('click', () => {
+                const host = document.getElementById('tailscale-host-input').value.trim();
+                if (!host) { document.getElementById('tailscale-status').textContent = 'Please enter a device name.'; return; }
+                localStorage.setItem('tailscaleRemoteHost', host);
+                TailscaleRemoteEngine.connect(host);
+                renderSettingsPanel();
+            });
+        }
+        if (tailscaleDisconnectBtn) {
+            tailscaleDisconnectBtn.addEventListener('click', () => {
+                localStorage.removeItem('tailscaleRemoteHost');
+                TailscaleRemoteEngine.disconnect();
+                renderSettingsPanel();
+            });
+        }
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -3508,6 +3528,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                     <button class="delete-playlist-btn">Delete Playlist</button>
                 </div>
             </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">Remote Playback</div>
+                <div class="settings-row">
+                    <div class="settings-row-info">
+                        <div class="settings-row-label">Tailscale Device Name</div>
+                        <div class="settings-row-sub">Enter the MagicDNS hostname of your Desktop PC (e.g. <code>simon-pc</code>). The app will connect via WebSocket over your Tailscale network and control playback remotely.</div>
+                    </div>
+                    <div class="settings-input-group">
+                        <input id="tailscale-host-input" class="settings-text-input" type="text" placeholder="device-name" value="${localStorage.getItem('tailscaleRemoteHost') || ''}" spellcheck="false" autocomplete="off">
+                        <button id="tailscale-connect-btn" class="settings-save-btn">Connect</button>
+                        ${localStorage.getItem('tailscaleRemoteHost') ? '<button id="tailscale-disconnect-btn" class="settings-reset-btn">Disconnect</button>' : ''}
+                    </div>
+                    <div id="tailscale-status" class="local-path-status" style="margin-top:8px;">${localStorage.getItem('tailscaleRemoteHost') ? 'Saved host: <strong>' + localStorage.getItem('tailscaleRemoteHost') + '</strong> — click Connect to activate.' : 'Not configured.'}</div>
+                </div>
+            </div>
         `;
 
         // Inline rename
@@ -4460,3 +4496,151 @@ document.addEventListener('DOMContentLoaded', async () => {
         switchToHomeView(false); // fallback
     }
 });
+
+// ─── Tailscale Remote Engine ──────────────────────────────────────────────────
+const TailscaleRemoteEngine = (() => {
+    let ws = null;
+    let remoteHost = null;
+    let isControlling = false;
+    let stateInterval = null;
+
+    function updateDeviceBtn() {
+        const btn = document.getElementById('device-btn');
+        if (!btn) return;
+        if (isControlling) {
+            btn.style.color = 'var(--accent)';
+            btn.style.filter = 'drop-shadow(0 0 6px var(--accent))';
+            btn.title = `Playing on: ${remoteHost}`;
+        } else {
+            btn.style.color = '';
+            btn.style.filter = '';
+            btn.title = 'Connect Remote Device';
+        }
+    }
+
+    function broadcastState() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const audioEl = document.getElementById('audio-player');
+        if (!audioEl) return;
+        ws.send(JSON.stringify({
+            type: 'STATE_UPDATE',
+            currentTime: audioEl.currentTime,
+            duration: audioEl.duration,
+            paused: audioEl.paused,
+            volume: audioEl.volume
+        }));
+    }
+
+    function connect(host) {
+        disconnect();
+        remoteHost = host;
+        const url = `ws://${host}:41000`;
+        const statusEl = document.getElementById('tailscale-status');
+
+        try {
+            ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                isControlling = true;
+                updateDeviceBtn();
+                if (statusEl) statusEl.innerHTML = `<span style="color:#4ade80">✓ Connected to <strong>${host}</strong></span>`;
+                stateInterval = setInterval(broadcastState, 2000);
+                console.log(`[Tailscale] Connected to ${host}`);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleRemoteCommand(data);
+                } catch(e) {}
+            };
+
+            ws.onerror = () => {
+                if (statusEl) statusEl.innerHTML = `<span style="color:#f87171">✗ Could not reach <strong>${host}</strong>. Is the Desktop app open and on Tailscale?</span>`;
+            };
+
+            ws.onclose = () => {
+                isControlling = false;
+                clearInterval(stateInterval);
+                updateDeviceBtn();
+                if (statusEl) statusEl.innerHTML = `Connection to <strong>${host}</strong> closed.`;
+            };
+
+        } catch(e) {
+            if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+        }
+    }
+
+    function disconnect() {
+        if (ws) { ws.close(); ws = null; }
+        isControlling = false;
+        remoteHost = null;
+        clearInterval(stateInterval);
+        updateDeviceBtn();
+    }
+
+    function sendCommand(payload) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify(payload));
+    }
+
+    function handleRemoteCommand(data) {
+        // When acting as the HOST (Desktop), incoming commands from a remote phone:
+        // These are forwarded via Electron IPC from main.js - handled below via electronAPI.
+        // When acting as the CLIENT (PWA remote), incoming data is state updates from Desktop.
+        if (data.type === 'STATE_UPDATE') {
+            const audioEl = document.getElementById('audio-player');
+            if (!audioEl) return;
+            if (Math.abs(audioEl.currentTime - data.currentTime) > 2) {
+                audioEl.currentTime = data.currentTime;
+            }
+        } else if (data.type === 'PLAY_TRACK') {
+            const track = data.track;
+            if (!track) return;
+            const title = (track.metadata && track.metadata.title) ? track.metadata.title : track.filename;
+            const artist = (track.metadata && track.metadata.artist) ? track.metadata.artist : 'Unknown Artist';
+            if (typeof playTrack === 'function') playTrack(track, title, artist);
+        } else if (data.type === 'PLAY_PAUSE') {
+            const audioEl = document.getElementById('audio-player');
+            if (!audioEl) return;
+            if (data.paused) audioEl.pause(); else audioEl.play();
+        } else if (data.type === 'SEEK') {
+            const audioEl = document.getElementById('audio-player');
+            if (audioEl && data.currentTime !== undefined) audioEl.currentTime = data.currentTime;
+        } else if (data.type === 'NEXT') {
+            if (typeof playNextTrack === 'function') playNextTrack(false);
+        } else if (data.type === 'PREV') {
+            if (typeof playPreviousTrack === 'function') playPreviousTrack();
+        }
+    }
+
+    // Register device-btn click to open settings
+    document.addEventListener('DOMContentLoaded', () => {}, false);
+    const devBtn = document.getElementById('device-btn');
+    if (devBtn) {
+        devBtn.addEventListener('click', () => {
+            // Open settings view so user can connect/manage
+            const settingsViewEl = document.getElementById('settings-view');
+            if (settingsViewEl && typeof renderSettingsPanel === 'function' && typeof openSettings === 'function') {
+                renderSettingsPanel();
+                openSettings();
+            }
+        });
+    }
+
+    // If running on Electron (Desktop), listen for inbound commands from remote phones
+    if (window.electronAPI && window.electronAPI.onRemoteCommand) {
+        window.electronAPI.onRemoteCommand((data) => {
+            handleRemoteCommand(data);
+        });
+    }
+
+    // Auto-connect on startup if host was saved
+    const savedHost = localStorage.getItem('tailscaleRemoteHost');
+    if (savedHost) {
+        // Slight delay so the app fully initialises first
+        setTimeout(() => connect(savedHost), 2000);
+    }
+
+    return { connect, disconnect, sendCommand, isControlling: () => isControlling };
+})();

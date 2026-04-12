@@ -4,8 +4,51 @@ const path = require('path');
 const fs = require('fs');
 const { protocol, net } = require('electron');
 const DiscordRPC = require('discord-rpc');
+const WebSocket = require('ws');
 
 let mainWindow;
+
+// --- Tailscale Remote Server Setup ---
+let wsServer = null;
+let activeWsClients = new Set();
+
+function startWebSocketServer() {
+    try {
+        wsServer = new WebSocket.Server({ port: 41000 });
+        console.log('Tailscale Remote Server Listening on Port 41000');
+        
+        wsServer.on('connection', (ws) => {
+            console.log('Remote Device Connected');
+            activeWsClients.add(ws);
+            
+            ws.on('message', (message) => {
+                try {
+                    const data = JSON.parse(message);
+                    if (mainWindow) {
+                        mainWindow.webContents.send('remote-incoming-command', data);
+                    }
+                } catch (e) { console.error('WS Parse Error', e); }
+            });
+            
+            ws.on('close', () => {
+                console.log('Remote Device Disconnected');
+                activeWsClients.delete(ws);
+            });
+        });
+    } catch (e) {
+        console.error('Failed to start WS Server', e);
+    }
+}
+
+// IPC from Renderer to Broadcast to Remotes
+ipcMain.on('remote-broadcast-state', (event, stateData) => {
+    const payload = JSON.stringify(stateData);
+    activeWsClients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(payload);
+        }
+    });
+});
 
 // --- Discord Rich Presence Setup ---
 const clientId = '1490907882877620254'; // User's personalization Client ID
@@ -233,6 +276,7 @@ app.whenReady().then(() => {
 
 
     createWindow();
+    startWebSocketServer();
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
