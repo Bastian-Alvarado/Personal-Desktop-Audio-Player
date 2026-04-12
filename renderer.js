@@ -2,6 +2,30 @@ let qqdlTargetUrl = 'https://wolf.qqdl.site';
 let availableCloudApis = [];
 let isQqdlInitialized = false;
 
+// Helper for racing multiple API requests
+const firstSuccess = (promises) => {
+    return new Promise((resolve) => {
+        let finished = 0;
+        let resolved = false;
+        promises.forEach(p => {
+            p.then(res => {
+                if (resolved) return;
+                if (res) {
+                    resolved = true;
+                    resolve(res);
+                } else {
+                    finished++;
+                    if (finished === promises.length) resolve(null);
+                }
+            }).catch(() => {
+                if (resolved) return;
+                finished++;
+                if (finished === promises.length) resolve(null);
+            });
+        });
+    });
+};
+
 async function initCloudTarget() {
     try {
         const res = await fetch('https://tidal-uptime.jiffy-puffs-1j.workers.dev/');
@@ -9,8 +33,25 @@ async function initCloudTarget() {
             const data = await res.json();
             if (data && data.api && data.api.length > 0) {
                 availableCloudApis = data.api.map(a => a.url);
-                qqdlTargetUrl = availableCloudApis[0];
-                console.log('QQDL Targets resolved:', availableCloudApis);
+                
+                // NEW: Race mirrors for the fastest/working one immediately
+                console.log('Racing QQDL mirrors for initial target...', availableCloudApis);
+                const winner = await firstSuccess(availableCloudApis.map(async (url) => {
+                    try {
+                        // Quick search ping to verify API health
+                        const ping = await fetch(`${url}/search/?s=a`);
+                        if (ping.ok) return url;
+                    } catch(e) {}
+                    return null;
+                }));
+
+                if (winner) {
+                    qqdlTargetUrl = winner;
+                    console.log('Primary QQDL Target resolved and verified:', qqdlTargetUrl);
+                } else {
+                    qqdlTargetUrl = availableCloudApis[0];
+                    console.warn('No mirrors responded to ping, using default:', qqdlTargetUrl);
+                }
             }
         }
     } catch(e) {
@@ -3767,30 +3808,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const tryAPIs = [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl)];
         
-        // Helper for racing multiple API requests
-        const firstSuccess = (promises) => {
-            return new Promise((resolve) => {
-                let finished = 0;
-                let resolved = false;
-                promises.forEach(p => {
-                    p.then(res => {
-                        if (resolved) return;
-                        if (res) {
-                            resolved = true;
-                            resolve(res);
-                        } else {
-                            finished++;
-                            if (finished === promises.length) resolve(null);
-                        }
-                    }).catch(() => {
-                        if (resolved) return;
-                        finished++;
-                        if (finished === promises.length) resolve(null);
-                    });
-                });
-            });
-        };
-
         // Stage 1: Parallel Hi-Res check across all APIs
         const result = await firstSuccess(tryAPIs.map(api => 
             attemptResolve(api, track.cloudId).then(res => res ? { api, ...res } : null)
