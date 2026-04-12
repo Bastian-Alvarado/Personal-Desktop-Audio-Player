@@ -1155,6 +1155,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     playPauseBtn.addEventListener('click', () => {
+        if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+            TailscaleRemoteEngine.sendCommand({ type: 'PLAY_PAUSE', paused: !audioPlayer.paused });
+            return;
+        }
         if (!audioPlayer.src) return;
         if (audioPlayer.paused) {
             audioPlayer.play();
@@ -1385,10 +1389,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     nextBtn.addEventListener('click', () => {
+        if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+            TailscaleRemoteEngine.sendCommand({ type: 'NEXT' });
+            return;
+        }
         playNextTrack(false);
     });
 
     prevBtn.addEventListener('click', () => {
+        if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+            TailscaleRemoteEngine.sendCommand({ type: 'PREV' });
+            return;
+        }
         playPreviousTrack();
     });
 
@@ -1530,6 +1542,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     progressBarContainer.addEventListener('mousedown', (e) => {
+        if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+            const rect = progressBarContainer.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const percent = Math.max(0, Math.min(1, clickX / rect.width));
+            if (audioPlayer.duration) {
+                TailscaleRemoteEngine.sendCommand({ type: 'SEEK', currentTime: percent * audioPlayer.duration });
+            }
+            return;
+        }
         if (!audioPlayer.src) return;
         if (isSeekingDisabled()) return;
         isDraggingScrubber = true;
@@ -1602,7 +1623,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 let clickX = touch.clientX - rect.left;
                 const percent = Math.max(0, Math.min(1, clickX / rect.width));
                 
-                if (audioPlayer.duration) {
+                if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+                    if (audioPlayer.duration) {
+                        TailscaleRemoteEngine.sendCommand({ type: 'SEEK', currentTime: percent * audioPlayer.duration });
+                    }
+                } else if (audioPlayer.duration) {
                     audioPlayer.currentTime = percent * audioPlayer.duration;
                 }
             }
@@ -1672,7 +1697,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (isDraggingScrubber) {
             isDraggingScrubber = false;
             const percent = updateScrubberVisuals(e);
-            if (audioPlayer.duration) {
+            
+            if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+                if (audioPlayer.duration) {
+                    TailscaleRemoteEngine.sendCommand({ type: 'SEEK', currentTime: percent * audioPlayer.duration });
+                }
+            } else if (audioPlayer.duration) {
                 audioPlayer.currentTime = percent * audioPlayer.duration;
             }
         }
@@ -4377,6 +4407,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         switchToHomeView(false); // fallback
     }
 
+    // Expose UI update helper for TailscaleRemoteEngine
+    window.updateNowPlayingUI = (metadata) => {
+        if (!metadata) return;
+        bottomTitle.textContent = metadata.title || 'Unknown Track';
+        bottomArtist.textContent = metadata.artist || 'Unknown Artist';
+        if (metadata.coverUrl) {
+            const artImg = bottomArtWrapper.querySelector('img');
+            if (artImg) artImg.src = metadata.coverUrl;
+            updatePlayerBarDynamicColor(metadata.coverUrl);
+        }
+    };
+
     // Expose settings helpers globally so TailscaleRemoteEngine (outside this scope) can reach them
     window._openSettings = () => { renderSettingsPanel(); openSettings(); };
 });
@@ -4388,14 +4430,14 @@ const TailscaleRemoteEngine = (() => {
     let isControlling = false;
     let stateInterval = null;
 
-    function updateDeviceBtn() {
+    function updateDeviceBtn(activeClientCount = 0) {
         const btn = document.getElementById('device-btn');
         const statusEl = document.getElementById('device-popover-status');
         if (btn) {
-            if (isControlling) {
+            if (isControlling || activeClientCount > 0) {
                 btn.style.color = 'var(--accent)';
                 btn.style.filter = 'drop-shadow(0 0 6px var(--accent))';
-                btn.title = `Playing on: ${remoteHost}`;
+                btn.title = isControlling ? `Playing on: ${remoteHost}` : 'Remote Device Connected';
             } else {
                 btn.style.color = '';
                 btn.style.filter = '';
@@ -4405,6 +4447,8 @@ const TailscaleRemoteEngine = (() => {
         if (statusEl) {
             if (isControlling) {
                 statusEl.innerHTML = `<span style="color:#4ade80">&#9679; Playing on <strong>${remoteHost}</strong></span>`;
+            } else if (activeClientCount > 0) {
+                statusEl.innerHTML = `<span style="color:#4ade80">&#9679; ${activeClientCount} Remote device(s) connected</span>`;
             } else {
                 statusEl.textContent = 'No devices connected';
             }
@@ -4450,8 +4494,9 @@ const TailscaleRemoteEngine = (() => {
                 isControlling = true;
                 updateDeviceBtn();
                 setStatus(`<span style="color:#4ade80">✓ Connected to <strong>${host}</strong></span>`);
-                stateInterval = setInterval(broadcastState, 2000);
-                console.log(`[Tailscale] Connected to ${host}`);
+                // Clients (phones) DON'T broadcast their local state to the host.
+                // This prevents the 3-second snapback issue.
+                console.log(`[Tailscale] Connected as Remote to ${host}`);
                 if (onFinish) onFinish({ success: true });
             };
 
@@ -4495,12 +4540,18 @@ const TailscaleRemoteEngine = (() => {
     }
 
     function handleRemoteCommand(data) {
-        // When acting as the HOST (Desktop), incoming commands from a remote phone:
-        // These are forwarded via Electron IPC from main.js - handled below via electronAPI.
         // When acting as the CLIENT (PWA remote), incoming data is state updates from Desktop.
         if (data.type === 'STATE_UPDATE') {
+            if (window.electronAPI) return; // Ignore state updates if we are the Host (Desktop)!
+            
             const audioEl = document.getElementById('audio-player');
             if (!audioEl) return;
+            
+            // Sync current track metadata if it changed
+            if (data.metadata && typeof updateNowPlayingUI === 'function') {
+                updateNowPlayingUI(data.metadata);
+            }
+
             if (Math.abs(audioEl.currentTime - data.currentTime) > 2) {
                 audioEl.currentTime = data.currentTime;
             }
@@ -4557,6 +4608,34 @@ const TailscaleRemoteEngine = (() => {
         window.electronAPI.onRemoteCommand((data) => {
             handleRemoteCommand(data);
         });
+
+        // Listen for remote client connection changes on the Desktop
+        if (window.electronAPI.onRemoteClientCountChanged) {
+            window.electronAPI.onRemoteClientCountChanged((count) => {
+                updateDeviceBtn(count);
+            });
+        }
+
+        // Host (Desktop) broadcasts its state to all connected remotes every 2 seconds
+        setInterval(() => {
+            const audioEl = document.getElementById('audio-player');
+            if (!audioEl) return;
+            
+            const state = {
+                type: 'STATE_UPDATE',
+                currentTime: audioEl.currentTime,
+                duration: audioEl.duration,
+                paused: audioEl.paused,
+                volume: audioEl.volume
+            };
+
+            // If a track is playing, include its metadata for remote UI sync
+            if (window.globalPlayingTrack) {
+                state.metadata = window.globalPlayingTrack.metadata || { title: window.globalPlayingTrack.filename };
+            }
+
+            window.electronAPI.remoteBroadcastState(state);
+        }, 2000);
     }
 
     // Auto-connect on startup if host was saved

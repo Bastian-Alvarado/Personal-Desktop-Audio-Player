@@ -20,6 +20,7 @@ function startWebSocketServer() {
         wsServer.on('connection', (ws) => {
             console.log('Remote Device Connected');
             activeWsClients.add(ws);
+            if (mainWindow) mainWindow.webContents.send('remote-client-count-changed', activeWsClients.size);
             
             ws.on('message', (message) => {
                 try {
@@ -33,6 +34,7 @@ function startWebSocketServer() {
             ws.on('close', () => {
                 console.log('Remote Device Disconnected');
                 activeWsClients.delete(ws);
+                if (mainWindow) mainWindow.webContents.send('remote-client-count-changed', activeWsClients.size);
             });
         });
     } catch (e) {

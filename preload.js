@@ -26,5 +26,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Tailscale Remote WebSockets
     remoteBroadcastState: (data) => ipcRenderer.send('remote-broadcast-state', data),
-    onRemoteCommand: (callback) => ipcRenderer.on('remote-incoming-command', (event, data) => callback(data))
+    onRemoteCommand: (callback) => ipcRenderer.on('remote-incoming-command', (event, data) => callback(data)),
+    onRemoteClientCountChanged: (callback) => ipcRenderer.on('remote-client-count-changed', (event, data) => callback(data))
 });
