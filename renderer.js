@@ -444,12 +444,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    async function saveTrackToDB(id, data, metadata, isDash = false) {
+    async function saveTrackToDB(id, data, metadata, isDash = false, coverBlob = null, lyrics = null) {
         const db = await openOfflineDB();
         return new Promise((resolve, reject) => {
             const transaction = db.transaction([STORE_NAME], 'readwrite');
             const store = transaction.objectStore(STORE_NAME);
-            const record = { id, metadata, timestamp: Date.now(), isDash };
+            const record = { id, metadata, timestamp: Date.now(), isDash, coverBlob, lyrics };
             if (isDash) record.offlineUri = data;
             else record.blob = data;
             
@@ -493,7 +493,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    async function downloadDashTrack(track, manifest) {
+    async function downloadDashTrack(track, manifest, coverBlob = null, lyrics = null) {
         try {
             if (!window.isSecureContext) {
                 throw new Error("DASH offline storage requires a secure context (HTTPS or localhost).");
@@ -519,7 +519,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const content = await shakaStorageInstance.store(manifestDataUrl, metadata);
             const offlineUri = content.offlineUri;
             
-            await saveTrackToDB(track.url, offlineUri, track.metadata, true);
+            await saveTrackToDB(track.url, offlineUri, track.metadata, true, coverBlob, lyrics);
             await syncOfflineState();
         } catch (e) {
             console.error('DASH Download failed:', e);
@@ -2850,6 +2850,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         return parsed;
     }
 
+    async function fetchLyricsRaw(title, artist, album, duration) {
+        // Core fetch logic without UI updates
+        let resData = { synced: null, plain: null };
+        
+        // Try lrclib.net
+        let url = `https://lrclib.net/api/get?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`;
+        if (album) url += `&album_name=${encodeURIComponent(album)}`;
+        if (duration) url += `&duration=${Math.round(duration)}`;
+
+        try {
+            const res = await fetch(url);
+            if (res.ok) {
+                const data = await res.json();
+                resData.synced = data.syncedLyrics || null;
+                resData.plain = data.plainLyrics || null;
+            }
+        } catch (e) { console.warn("Raw lyrics fetch failed", e); }
+        
+        return resData;
+    }
+
     async function fetchLyrics(title, artist, album, duration) {
         lyricsContainer.classList.remove('editor-mode');
         lyricsContainer.innerHTML = '<div class="lyrics-placeholder">Loading lyrics...</div>';
@@ -2867,8 +2888,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentLyricsDuration = duration || 0;
         renderLyricsActionBar(false, false);
 
-        // 1. Check localStorage for user-created lyrics first
+        // 1. Check offline DB or localStorage
         if (lyricsTrackUrl) {
+            // Check manual save first
             const saved = localStorage.getItem(`lrc_${lyricsTrackUrl}`);
             if (saved) {
                 lyricsData = parseLrc(saved);
@@ -2876,31 +2898,35 @@ document.addEventListener('DOMContentLoaded', async () => {
                 renderLyricsActionBar(true, true);
                 return;
             }
+
+            // Check if it's an offline track with cached lyrics
+            const record = await getTrackRecordFromDB(lyricsTrackUrl);
+            if (record && record.lyrics) {
+                const lrcText = record.lyrics.synced || record.lyrics.plain;
+                if (lrcText) {
+                    if (record.lyrics.synced) {
+                        lyricsData = parseLrc(record.lyrics.synced);
+                        renderLyrics();
+                        renderLyricsActionBar(true, false);
+                    } else {
+                        plainLyricsCache = record.lyrics.plain;
+                        showLyricsNoSyncState();
+                    }
+                    return;
+                }
+            }
         }
 
-        // 2. Try lrclib.net
-        let url = `https://lrclib.net/api/get?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`;
-        if (album) url += `&album_name=${encodeURIComponent(album)}`;
-        if (duration) url += `&duration=${Math.round(duration)}`;
-        
-        try {
-            const res = await fetch(url);
-            if (res.ok) {
-                const data = await res.json();
-                if (data.syncedLyrics) {
-                    lyricsData = parseLrc(data.syncedLyrics);
-                    renderLyrics();
-                    renderLyricsActionBar(true, false);
-                } else {
-                    plainLyricsCache = data.plainLyrics || '';
-                    showLyricsNoSyncState();
-                }
-            } else {
-                showLyricsNoSyncState();
-            }
-        } catch (err) {
-            console.error('Lyrics fetch error', err);
-            lyricsContainer.innerHTML = '<div class="lyrics-placeholder">Error loading lyrics.</div>';
+        const data = await fetchLyricsRaw(title, artist, album, duration);
+        if (data.synced) {
+            lyricsData = parseLrc(data.synced);
+            renderLyrics();
+            renderLyricsActionBar(true, false);
+        } else if (data.plain) {
+            plainLyricsCache = data.plain;
+            showLyricsNoSyncState();
+        } else {
+            showLyricsNoSyncState();
         }
     }
 
@@ -3847,6 +3873,40 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Special URL that Service Worker will intercept for Range-Request support (PWA standard)
                 fullAudioUrl = `./pwa-offline/${encodeURIComponent(track.url)}`;
             }
+
+            // Load offline assets (Covers / Lyrics)
+            const record = await getTrackRecordFromDB(track.url);
+            if (record) {
+                if (record.coverBlob) {
+                    const localCoverUrl = URL.createObjectURL(record.coverBlob);
+                    bottomArtWrapper.innerHTML = `<img src="${localCoverUrl}" alt="Album Art">`;
+                    if (immersiveBg) immersiveBg.src = localCoverUrl;
+                    if (immersiveArt) {
+                        immersiveArt.src = localCoverUrl;
+                        immersiveArt.style.display = 'block';
+                    }
+                    updatePlayerBarDynamicColor(localCoverUrl);
+                } else if (window.electronAPI && !localPath.startsWith('pwa-stored')) {
+                    // Electron cover fallback
+                    const pictureUrl = `simon-offline://${encodeURIComponent(localPath)}.cover.jpg`;
+                    bottomArtWrapper.innerHTML = `<img src="${pictureUrl}" alt="Album Art" onerror="this.style.display='none'">`;
+                    if (immersiveBg) immersiveBg.src = pictureUrl;
+                    if (immersiveArt) {
+                        immersiveArt.src = pictureUrl;
+                        immersiveArt.style.display = 'block';
+                    }
+                    updatePlayerBarDynamicColor(pictureUrl);
+                }
+            }
+        } else if (track.metadata && track.metadata.coverUrl) {
+            const pictureUrl = track.metadata.coverUrl || '';
+            bottomArtWrapper.innerHTML = `<img src="${pictureUrl}" alt="Album Art" crossorigin="anonymous">`;
+            if (immersiveBg) immersiveBg.src = pictureUrl;
+            if (immersiveArt) {
+                 immersiveArt.src = pictureUrl;
+                 immersiveArt.style.display = 'block';
+            }
+            updatePlayerBarDynamicColor(pictureUrl);
         }
 
         // Update Bottom Offline Icon
@@ -3858,7 +3918,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             if (artist && artist !== 'Unknown Artist') {
                 let recent = JSON.parse(localStorage.getItem('recentArtists') || '[]');
-                // Migrate old string-only format gracefully
                 recent = recent.map(a => typeof a === 'string' ? { name: a, picture: null } : a);
                 recent = recent.filter(a => a.name !== artist);
                 const pictureHash = (window.artistImageHashes && window.artistImageHashes[artist]) || null;
@@ -3867,29 +3926,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 renderRecentArtists();
             }
         } catch(e){}
-        
-        if (track.metadata && track.metadata.coverUrl) {
-            const pictureUrl = track.metadata.coverUrl || '';
-            bottomArtWrapper.innerHTML = `<img src="${pictureUrl}" alt="Album Art" crossorigin="anonymous">`;
-            if (immersiveBg) immersiveBg.src = pictureUrl;
-            if (immersiveArt) {
-                 immersiveArt.src = pictureUrl;
-                 immersiveArt.style.display = 'block';
-            }
-            // Trigger dynamic color for mobile
-            updatePlayerBarDynamicColor(pictureUrl);
-        } else {
-            bottomArtWrapper.innerHTML = '';
-            if (immersiveBg) immersiveBg.src = '';
-            if (immersiveArt) immersiveArt.style.display = 'none';
-            
-            const playerBar = document.querySelector('.player-bar');
-            if (playerBar) {
-                playerBar.style.removeProperty('--player-dynamic-bg');
-                playerBar.style.removeProperty('--player-dynamic-rgb');
-            }
-        }
-        
+
         if (immersiveTitle) immersiveTitle.textContent = title;
         if (immersiveArtist) immersiveArtist.textContent = artist;
 
@@ -3961,11 +3998,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         refreshCurrentView();
 
         try {
+            // Gather extra assets for offline
+            let coverBlob = null;
+            let lyrics = null;
+
+            if (track.metadata) {
+                const { title, artist, album, duration, coverUrl } = track.metadata;
+                
+                // 1. Fetch Lyrics
+                lyrics = await fetchLyricsRaw(title, artist, album, duration);
+
+                // 2. Fetch Cover Blob
+                if (coverUrl) {
+                    try {
+                        const cRes = await fetch(coverUrl);
+                        if (cRes.ok) coverBlob = await cRes.blob();
+                    } catch (e) { console.warn("Failed to fetch cover blob", e); }
+                }
+            }
+
             if (isDashForDownload) {
                 if (!dashManifestData) {
                     throw new Error("Resolved DASH manifest is empty.");
                 }
-                await downloadDashTrack(track, dashManifestData);
+                await downloadDashTrack(track, dashManifestData, coverBlob, lyrics);
             } else if (window.electronAPI) {
                 if (!targetUrl) {
                     throw new Error("Download URL is undefined.");
@@ -3973,7 +4029,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const result = await window.electronAPI.downloadTrack({
                     url: targetUrl,
                     originalTrackingUrl: track.url, 
-                    metadata: track.metadata
+                    metadata: track.metadata,
+                    coverUrl: (track.metadata && track.metadata.coverUrl) ? track.metadata.coverUrl : null,
+                    lyrics: lyrics
                 });
                 if (result.success) await syncOfflineState();
             } else {
@@ -3981,7 +4039,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const response = await fetch(targetUrl);
                 if (!response.ok) throw new Error('Network fetch failed');
                 const blob = await response.blob();
-                await saveTrackToDB(track.url, blob, track.metadata);
+                await saveTrackToDB(track.url, blob, track.metadata, false, coverBlob, lyrics);
                 await syncOfflineState();
             }
         } catch (e) {

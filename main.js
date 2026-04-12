@@ -36,15 +36,17 @@ ipcMain.handle('select-directory', async () => {
     return result.filePaths[0];
 });
 
-ipcMain.handle('download-track', async (event, { url, originalTrackingUrl, metadata }) => {
+ipcMain.handle('download-track', async (event, { url, originalTrackingUrl, metadata, coverUrl, lyrics }) => {
     const trackingId = originalTrackingUrl || url;
     const metadataMap = getDownloadsMetadata();
     if (metadataMap[trackingId]) return { success: true, alreadyExists: true };
 
-    const safeFilename = encodeURIComponent(trackingId).replace(/%/g, '_').slice(-100) + '.cache';
-    const targetPath = path.join(OFFLINE_DIR, safeFilename);
+    const safeFilenameBase = encodeURIComponent(trackingId).replace(/%/g, '_').slice(-100);
+    const targetPath = path.join(OFFLINE_DIR, safeFilenameBase + '.cache');
+    const coverPath = path.join(OFFLINE_DIR, safeFilenameBase + '.cache.cover.jpg');
     
     try {
+        // 1. Download Audio
         const response = await net.fetch(url);
         if (!response.ok) throw new Error(`Download failed: ${response.status}`);
 
@@ -59,22 +61,36 @@ ipcMain.handle('download-track', async (event, { url, originalTrackingUrl, metad
             downloadedSize += value.length;
             writer.write(Buffer.from(value));
             const progress = totalSize ? (downloadedSize / totalSize) : 0;
-            if (mainWindow) mainWindow.webContents.send('download-progress', { url: trackingId, progress });
+            if (mainWindow) mainWindow.webContents.send('download-progress', { url: trackingId, progress: progress * 0.9 }); // Save 10% for cover
         }
 
-        return new Promise((resolve, reject) => {
+        // 2. Download Cover if provided
+        if (coverUrl) {
+            try {
+                const cRes = await net.fetch(coverUrl);
+                if (cRes.ok) {
+                    const cBuffer = Buffer.from(await cRes.arrayBuffer());
+                    fs.writeFileSync(coverPath, cBuffer);
+                }
+            } catch (e) { console.warn("Cover download failed", e); }
+        }
+
+        return new Promise((resolve) => {
             writer.on('finish', () => {
-                metadataMap[trackingId] = { localPath: safeFilename, downloadedAt: Date.now(), metadata: metadata };
+                metadataMap[trackingId] = { 
+                    localPath: safeFilenameBase + '.cache', 
+                    downloadedAt: Date.now(), 
+                    metadata: metadata,
+                    lyrics: lyrics // Store lyrics directly in JSON metadata
+                };
                 saveDownloadsMetadata(metadataMap);
+                if (mainWindow) mainWindow.webContents.send('download-progress', { url: trackingId, progress: 1.0 });
                 resolve({ success: true });
-            });
-            writer.on('error', (err) => {
-                if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
-                reject(err);
             });
         });
     } catch (error) {
         if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+        if (fs.existsSync(coverPath)) fs.unlinkSync(coverPath);
         throw error;
     }
 });
@@ -84,7 +100,9 @@ ipcMain.handle('delete-offline-track', async (event, trackingId) => {
     const info = meta[trackingId];
     if (info) {
         const filePath = path.join(OFFLINE_DIR, info.localPath);
+        const coverPath = filePath + '.cover.jpg';
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        if (fs.existsSync(coverPath)) fs.unlinkSync(coverPath);
         delete meta[trackingId];
         saveDownloadsMetadata(meta);
         return true;
