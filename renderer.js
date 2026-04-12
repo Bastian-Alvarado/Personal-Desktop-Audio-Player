@@ -1731,14 +1731,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             searchEmptyState?.classList.remove('hidden');
             return; 
         }
+
+        // Instant Switch (No History Push) to provide immediate feedback
+        if (searchView && !searchView.classList.contains('active')) {
+            switchToSearchView(false);
+        }
         
         clearTimeout(searchTimeout);
-        if (searchTracksSection) searchTracksSection.innerHTML = '<div class="loading">Searching Cloud...</div>';
+        if (searchTracksSection) {
+            searchTracksSection.innerHTML = '<div class="loading">Searching Cloud...</div>';
+            searchTracksSection.classList.remove('hidden');
+        }
         searchEmptyState?.classList.add('hidden');
 
         searchTimeout = setTimeout(() => {
-            switchToSearchView();
-        }, 600);
+            renderSearchResults(query);
+        }, 400);
     }
 
     if (searchInput) searchInput.addEventListener('input', handleSearchInput);
