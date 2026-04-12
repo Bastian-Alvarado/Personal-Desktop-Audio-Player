@@ -1007,14 +1007,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <div class="settings-row">
                     <div class="settings-row-info">
                         <div class="settings-row-label">Tailscale Device Name</div>
-                        <div class="settings-row-sub">Enter the MagicDNS hostname of your Desktop PC (e.g. <code style="font-family:monospace;opacity:0.8;">simon-pc</code>). The app will connect via WebSocket over your Tailscale network and use it as the playback device.</div>
+                        <div class="settings-row-sub">Enter the full MagicDNS address of your Desktop PC (e.g. <code style="font-family:monospace;opacity:0.8;">simon-pc.tailaeca61.ts.net</code>). The app will connect via WebSocket over your Tailscale network and use it as the playback device.</div>
                     </div>
                     <div class="settings-input-group">
                         <input id="tailscale-host-input" class="settings-text-input" type="text" placeholder="device-name" value="${localStorage.getItem('tailscaleRemoteHost') || ''}" spellcheck="false" autocomplete="off">
                         <button id="tailscale-connect-btn" class="settings-save-btn">Connect</button>
                         ${localStorage.getItem('tailscaleRemoteHost') ? `<button id="tailscale-disconnect-btn" class="settings-reset-btn">Disconnect</button>` : ''}
                     </div>
-                    <div id="tailscale-status" class="local-path-status" style="margin-top:8px;">${localStorage.getItem('tailscaleRemoteHost') ? `Saved host: <strong>${localStorage.getItem('tailscaleRemoteHost')}</strong> — click Connect to activate.` : 'Not configured.'}</div>
+                    <div id="tailscale-status" class="local-path-status" style="margin-top:8px;">
+                        ${typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling() 
+                            ? `<span style="color:#4ade80">✓ Connected to <strong>${localStorage.getItem('tailscaleRemoteHost')}</strong></span>` 
+                            : (localStorage.getItem('tailscaleRemoteHost') ? `Saved host: <strong>${localStorage.getItem('tailscaleRemoteHost')}</strong> — click Connect to activate.` : 'Not configured.')}
+                    </div>
                 </div>
             </div>
         `;
@@ -4399,11 +4403,16 @@ const TailscaleRemoteEngine = (() => {
         }));
     }
 
+    function setStatus(html) {
+        const el = document.getElementById('tailscale-status');
+        if (el) el.innerHTML = html;
+        else console.log('[Tailscale]', html);
+    }
+
     function connect(host) {
         disconnect();
         remoteHost = host;
         const url = `ws://${host}:41000`;
-        const statusEl = document.getElementById('tailscale-status');
 
         try {
             ws = new WebSocket(url);
@@ -4411,7 +4420,7 @@ const TailscaleRemoteEngine = (() => {
             ws.onopen = () => {
                 isControlling = true;
                 updateDeviceBtn();
-                if (statusEl) statusEl.innerHTML = `<span style="color:#4ade80">✓ Connected to <strong>${host}</strong></span>`;
+                setStatus(`<span style="color:#4ade80">✓ Connected to <strong>${host}</strong></span>`);
                 stateInterval = setInterval(broadcastState, 2000);
                 console.log(`[Tailscale] Connected to ${host}`);
             };
@@ -4424,18 +4433,18 @@ const TailscaleRemoteEngine = (() => {
             };
 
             ws.onerror = () => {
-                if (statusEl) statusEl.innerHTML = `<span style="color:#f87171">✗ Could not reach <strong>${host}</strong>. Is the Desktop app open and on Tailscale?</span>`;
+                setStatus(`<span style="color:#f87171">✗ Could not reach <strong>${host}</strong>. Is the Desktop app open and on Tailscale?</span>`);
             };
 
             ws.onclose = () => {
                 isControlling = false;
                 clearInterval(stateInterval);
                 updateDeviceBtn();
-                if (statusEl) statusEl.innerHTML = `Connection to <strong>${host}</strong> closed.`;
+                setStatus(`Connection to <strong>${host}</strong> closed.`);
             };
 
         } catch(e) {
-            if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+            setStatus(`Error: ${e.message}`);
         }
     }
 
