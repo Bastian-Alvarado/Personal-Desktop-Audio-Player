@@ -1047,6 +1047,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ` : '<div class="local-sources-empty">No local sources added yet.</div>'}
                 </div>
             </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">Remote Playback</div>
+                <div class="settings-row">
+                    <div class="settings-row-info">
+                        <div class="settings-row-label">Tailscale Device Name</div>
+                        <div class="settings-row-sub">Enter the MagicDNS hostname of your Desktop PC (e.g. <code style="font-family:monospace;opacity:0.8;">simon-pc</code>). The app will connect via WebSocket over your Tailscale network and use it as the playback device.</div>
+                    </div>
+                    <div class="settings-input-group">
+                        <input id="tailscale-host-input" class="settings-text-input" type="text" placeholder="device-name" value="${localStorage.getItem('tailscaleRemoteHost') || ''}" spellcheck="false" autocomplete="off">
+                        <button id="tailscale-connect-btn" class="settings-save-btn">Connect</button>
+                        ${localStorage.getItem('tailscaleRemoteHost') ? `<button id="tailscale-disconnect-btn" class="settings-reset-btn">Disconnect</button>` : ''}
+                    </div>
+                    <div id="tailscale-status" class="local-path-status" style="margin-top:8px;">${localStorage.getItem('tailscaleRemoteHost') ? `Saved host: <strong>${localStorage.getItem('tailscaleRemoteHost')}</strong> — click Connect to activate.` : 'Not configured.'}</div>
+                </div>
+            </div>
         `;
 
         // Network section handlers
@@ -3529,20 +3545,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 </div>
             </div>
 
-            <div class="settings-section">
-                <div class="settings-section-title">Remote Playback</div>
-                <div class="settings-row">
-                    <div class="settings-row-info">
-                        <div class="settings-row-label">Tailscale Device Name</div>
-                        <div class="settings-row-sub">Enter the MagicDNS hostname of your Desktop PC (e.g. <code>simon-pc</code>). The app will connect via WebSocket over your Tailscale network and control playback remotely.</div>
-                    </div>
-                    <div class="settings-input-group">
-                        <input id="tailscale-host-input" class="settings-text-input" type="text" placeholder="device-name" value="${localStorage.getItem('tailscaleRemoteHost') || ''}" spellcheck="false" autocomplete="off">
-                        <button id="tailscale-connect-btn" class="settings-save-btn">Connect</button>
-                        ${localStorage.getItem('tailscaleRemoteHost') ? '<button id="tailscale-disconnect-btn" class="settings-reset-btn">Disconnect</button>' : ''}
-                    </div>
-                    <div id="tailscale-status" class="local-path-status" style="margin-top:8px;">${localStorage.getItem('tailscaleRemoteHost') ? 'Saved host: <strong>' + localStorage.getItem('tailscaleRemoteHost') + '</strong> — click Connect to activate.' : 'Not configured.'}</div>
-                </div>
             </div>
         `;
 
@@ -4506,15 +4508,24 @@ const TailscaleRemoteEngine = (() => {
 
     function updateDeviceBtn() {
         const btn = document.getElementById('device-btn');
-        if (!btn) return;
-        if (isControlling) {
-            btn.style.color = 'var(--accent)';
-            btn.style.filter = 'drop-shadow(0 0 6px var(--accent))';
-            btn.title = `Playing on: ${remoteHost}`;
-        } else {
-            btn.style.color = '';
-            btn.style.filter = '';
-            btn.title = 'Connect Remote Device';
+        const statusEl = document.getElementById('device-popover-status');
+        if (btn) {
+            if (isControlling) {
+                btn.style.color = 'var(--accent)';
+                btn.style.filter = 'drop-shadow(0 0 6px var(--accent))';
+                btn.title = `Playing on: ${remoteHost}`;
+            } else {
+                btn.style.color = '';
+                btn.style.filter = '';
+                btn.title = 'Connect Device';
+            }
+        }
+        if (statusEl) {
+            if (isControlling) {
+                statusEl.innerHTML = `<span style="color:#4ade80">&#9679; Playing on <strong>${remoteHost}</strong></span>`;
+            } else {
+                statusEl.textContent = 'No devices connected';
+            }
         }
     }
 
@@ -4614,17 +4625,31 @@ const TailscaleRemoteEngine = (() => {
         }
     }
 
-    // Register device-btn click to open settings
-    document.addEventListener('DOMContentLoaded', () => {}, false);
+    // Register device-btn: toggle the device popover on click
     const devBtn = document.getElementById('device-btn');
-    if (devBtn) {
-        devBtn.addEventListener('click', () => {
-            // Open settings view so user can connect/manage
-            const settingsViewEl = document.getElementById('settings-view');
-            if (settingsViewEl && typeof renderSettingsPanel === 'function' && typeof openSettings === 'function') {
-                renderSettingsPanel();
-                openSettings();
+    const devPopover = document.getElementById('device-popover');
+    const devPopoverSettingsBtn = document.getElementById('device-popover-settings-btn');
+
+    if (devBtn && devPopover) {
+        devBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            devPopover.classList.toggle('hidden');
+        });
+
+        // Dismiss popover when clicking anywhere outside it
+        document.addEventListener('click', (e) => {
+            if (!devPopover.contains(e.target) && e.target !== devBtn) {
+                devPopover.classList.add('hidden');
             }
+        });
+    }
+
+    // "Manage in Settings" button inside the popover
+    if (devPopoverSettingsBtn) {
+        devPopoverSettingsBtn.addEventListener('click', () => {
+            if (devPopover) devPopover.classList.add('hidden');
+            renderSettingsPanel();
+            openSettings();
         });
     }
 
