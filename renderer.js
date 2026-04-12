@@ -66,6 +66,10 @@ function getTidalImage(hash, size = '320x320') {
     return `https://resources.tidal.com/images/${hash.replace(/-/g, '/')}/${size}.jpg`;
 }
 
+// Global Configuration
+const DEFAULT_SERVER_URL = 'http://localhost:3000';
+const serverBaseUrl = localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL;
+
 document.addEventListener('DOMContentLoaded', async () => {
     // Views
     const homeView = document.getElementById('home-view');
@@ -742,11 +746,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (push) navigateTo('settings');
         hideOverlays();
         
-        document.querySelectorAll('.view').forEach(v => {
-            v.classList.remove('active');
-            v.classList.add('hidden');
-        });
-        
         settingsView.classList.remove('hidden');
         settingsView.classList.add('active');
         settingsBtn.classList.add('settings-btn-active');
@@ -759,14 +758,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     settingsBtn.addEventListener('click', () => {
         if (settingsView.classList.contains('active')) {
-            closeSettings();
+            history.back();
         } else {
             renderSettingsPanel();
             openSettings();
         }
     });
 
-    settingsCloseBtn.addEventListener('click', closeSettings);
+    settingsCloseBtn.addEventListener('click', () => {
+        history.back();
+    });
 
     // ── Metadata Editor Logic ────────────────────────────────────────────────
     
@@ -1000,54 +1001,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const body = settingsView.querySelector('.settings-body');
         if (!body) return;
 
-        const currentCustomUrl = localStorage.getItem('serverUrl') || '';
-        const localPaths = getLocalMusicPaths();
-
         body.innerHTML = `
-            <div class="settings-section">
-                <div class="settings-section-title">Network</div>
-                <div class="settings-row">
-                    <div class="settings-row-info">
-                        <div class="settings-row-label">Backend Server Address</div>
-                        <div class="settings-row-sub">Override the default address (${DEFAULT_SERVER_URL}). Useful for connecting via Tailscale or a remote machine.</div>
-                    </div>
-                    <div class="settings-input-group">
-                        <input id="server-url-input" class="settings-text-input" type="text" placeholder="${DEFAULT_SERVER_URL}" value="${currentCustomUrl}" spellcheck="false" autocomplete="off">
-                        <button id="server-url-save-btn" class="settings-save-btn">Save &amp; Restart</button>
-                        ${currentCustomUrl ? `<button id="server-url-reset-btn" class="settings-reset-btn">Reset to Default</button>` : ''}
-                    </div>
-                    ${currentCustomUrl ? `<div class="settings-active-url">Currently using: <span>${currentCustomUrl}</span></div>` : `<div class="settings-active-url">Currently using: <span>${DEFAULT_SERVER_URL} (default)</span></div>`}
-                </div>
-            </div>
-
-            <div class="settings-section">
-                <div class="settings-section-title">Local Music Sources</div>
-                <div class="settings-row">
-                    <div class="settings-row-info">
-                        <div class="settings-row-label">Add Music Folder</div>
-                        <div class="settings-row-sub">Point to any local folder. Its audio files are merged with your library automatically.</div>
-                    </div>
-                    <div class="settings-input-group">
-                        <button id="local-path-add-btn" class="settings-save-btn">Add Folder</button>
-                        <button id="local-rescan-btn" class="settings-reset-btn" style="margin-left: 8px;">Force Rescan Library</button>
-                    </div>
-                    <div id="local-path-status" class="local-path-status"></div>
-                    ${localPaths.length > 0 ? `
-                        <div class="local-sources-list">
-                            ${localPaths.map((p, i) => `
-                                <div class="local-source-item">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                                    <span class="local-source-path" title="${p}">${p}</span>
-                                    <button class="local-source-remove-btn" data-index="${i}" title="Remove">
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                                    </button>
-                                </div>
-                            `).join('')}
-                        </div>
-                    ` : '<div class="local-sources-empty">No local sources added yet.</div>'}
-                </div>
-            </div>
-
             <div class="settings-section">
                 <div class="settings-section-title">Remote Playback</div>
                 <div class="settings-row">
@@ -1064,98 +1018,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 </div>
             </div>
         `;
-
-        // Network section handlers
-        document.getElementById('server-url-save-btn').addEventListener('click', () => {
-            const val = document.getElementById('server-url-input').value.trim().replace(/\/+$/, '');
-            if (val && val !== DEFAULT_SERVER_URL) localStorage.setItem('serverUrl', val);
-            else localStorage.removeItem('serverUrl');
-            location.reload();
-        });
-        const resetBtn = document.getElementById('server-url-reset-btn');
-        if (resetBtn) resetBtn.addEventListener('click', () => { localStorage.removeItem('serverUrl'); location.reload(); });
-
-        // Local sources: Add folder (Native Picker)
-        document.getElementById('local-path-add-btn').addEventListener('click', async () => {
-            if (!window.electronAPI) {
-                alert('Folder selection is only available in the desktop app.');
-                return;
-            }
-
-            const pathVal = await window.electronAPI.selectDirectory();
-            if (!pathVal) return;
-
-            const statusEl = document.getElementById('local-path-status');
-            const paths = getLocalMusicPaths();
-            
-            if (paths.includes(pathVal)) {
-                statusEl.textContent = 'This folder is already added.';
-                statusEl.className = 'local-path-status error';
-                return;
-            }
-
-            statusEl.textContent = 'Scanning and adding folder...';
-            statusEl.className = 'local-path-status scanning';
-            document.getElementById('local-path-add-btn').disabled = true;
-
-            try {
-                const res = await fetch(`${serverBaseUrl}/api/scan-directory`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: pathVal })
-                });
-                
-                if (!res.ok) throw new Error(res.statusText);
-                
-                paths.push(pathVal);
-                saveLocalMusicPaths(paths);
-                localStorage.setItem('lastScanTime', Date.now().toString());
-
-                statusEl.textContent = `✓ Folder Added and Scanned successfully.`;
-                statusEl.className = 'local-path-status success';
-                
-                await initializeMusicLibrary();
-                renderSettingsPanel();
-            } catch (e) {
-                statusEl.textContent = `Error scanning: ${e.message}`;
-                statusEl.className = 'local-path-status error';
-            } finally {
-                document.getElementById('local-path-add-btn').disabled = false;
-            }
-        });
-
-        // Force Rescan Handler
-        const rescanBtn = document.getElementById('local-rescan-btn');
-        if (rescanBtn) {
-            rescanBtn.addEventListener('click', async () => {
-                const statusEl = document.getElementById('local-path-status');
-                rescanBtn.disabled = true;
-                statusEl.textContent = 'Refreshing all local sources...';
-                statusEl.className = 'local-path-status scanning';
-                
-                try {
-                    await rescanLocalSources();
-                    statusEl.textContent = '✓ Library rescan complete.';
-                    statusEl.className = 'local-path-status success';
-                } catch (e) {
-                    statusEl.textContent = 'Error during rescan.';
-                    statusEl.className = 'local-path-status error';
-                } finally {
-                    rescanBtn.disabled = false;
-                }
-            });
-        }
-
-        // Local sources: Remove folder
-        body.querySelectorAll('.local-source-remove-btn').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const idx = parseInt(btn.dataset.index);
-                const paths = getLocalMusicPaths();
-                paths.splice(idx, 1);
-                saveLocalMusicPaths(paths);
-                await initializeMusicLibrary();
-                renderSettingsPanel();
-            });
-        });
 
         // Tailscale Remote handlers
         const tailscaleConnectBtn = document.getElementById('tailscale-connect-btn');
@@ -1826,6 +1688,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         hideQueueOverlay();
         hideImmersiveOverlay();
         if (typeof hideContextMenu === 'function') hideContextMenu();
+        if (typeof closeSettings === 'function') closeSettings();
     }
 
     // ── Navigation & Persistence Logic ────────────────────────────────────────
@@ -4482,21 +4345,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             ensureDashPlayer().catch(e => console.warn("Background Shaka preload failed", e))
         ]);
 
-        // Auto-rescan check (24-hour interval)
-        const lastScanTime = parseInt(localStorage.getItem('lastScanTime') || '0');
-        const now = Date.now();
-        if (lastScanTime > 0 && (now - lastScanTime > 24 * 60 * 60 * 1000)) {
-            console.log('Last scan was over 24 hours ago. Triggering automatic rescan...');
-            // We run it as a floating promise so it doesn't block startup
-            rescanLocalSources().catch(e => console.error('Auto-rescan failed', e));
-        }
-
         // Always start at landing page (Home)
         switchToHomeView(false);
     } catch (err) {
         console.error("Initialization failed:", err);
         switchToHomeView(false); // fallback
     }
+
+    // Expose settings helpers globally so TailscaleRemoteEngine (outside this scope) can reach them
+    window._openSettings = () => { renderSettingsPanel(); openSettings(); };
 });
 
 // ─── Tailscale Remote Engine ──────────────────────────────────────────────────
@@ -4645,11 +4502,11 @@ const TailscaleRemoteEngine = (() => {
     }
 
     // "Manage in Settings" button inside the popover
+    // Uses window._openSettings because this engine runs outside the DOMContentLoaded scope
     if (devPopoverSettingsBtn) {
         devPopoverSettingsBtn.addEventListener('click', () => {
             if (devPopover) devPopover.classList.add('hidden');
-            renderSettingsPanel();
-            openSettings();
+            if (typeof window._openSettings === 'function') window._openSettings();
         });
     }
 

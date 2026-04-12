@@ -1585,6 +1585,7 @@ body {
         display: flex !important;
         order: 5;
         margin-left: 12px;
+        margin-right: 12px;
         color: white;
         opacity: 0.7;
     }
