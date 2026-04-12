@@ -363,26 +363,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function playDashStream(manifest) {
         try {
             await ensureDashPlayer();
-            // If manifest is XML, we can load it as a data URL, 
-            // but these Tidal manifests often work best when passed as a string via a specific protocol or blob
-            // Actually, Shaka can load from a manifest string if we use a plugin, 
-            // but the simplest way is to pass the base64 data URL if it's base64, 
-            // or a Blob URL if it's XML string.
             
-            let manifestUrl;
+            let manifestDataUrl;
             if (manifest.trim().startsWith('<?xml') || manifest.trim().startsWith('<MPD')) {
-                const blob = new Blob([manifest], { type: 'application/dash+xml' });
-                manifestUrl = URL.createObjectURL(blob);
+                // For XML strings, encode to data URL
+                manifestDataUrl = `data:application/dash+xml;charset=utf-8,${encodeURIComponent(manifest)}`;
             } else {
-                // Assume base64
-                manifestUrl = `data:application/dash+xml;base64,${manifest}`;
+                // For Base64 strings, strip whitespace and embed directly
+                const cleanManifest = manifest.replace(/\s/g, '');
+                manifestDataUrl = `data:application/dash+xml;base64,${cleanManifest}`;
             }
 
-            await shakaPlayerInstance.load(manifestUrl);
+            await shakaPlayerInstance.load(manifestDataUrl);
             audioPlayer.play().catch(e => console.error("Initial DASH play failed", e));
         } catch (e) {
             console.error('Error in playDashStream:', e);
-            alert("Failed to play DASH stream: " + e.message);
+            const errorMsg = e.toString ? e.toString() : (e.message || e);
+            alert("Failed to play DASH stream: " + errorMsg);
         }
     }
 
@@ -391,7 +388,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             await shakaPlayerInstance.detach();
             await shakaPlayerInstance.destroy();
             shakaPlayerInstance = null;
-            shakaLibLoaded = false; // Re-load to clean state
+            // shakaLibLoaded = false; // KEEP LOADED to avoid redundant script injection
         }
     }
     let userQueue = [];
@@ -3347,39 +3344,67 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!track.isCloud) return track.url;
         
         const tryAPIs = [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl)];
-        let firstDashFound = null;
+        
+        // Helper for racing multiple API requests
+        const firstSuccess = (promises) => {
+            return new Promise((resolve) => {
+                let finished = 0;
+                let resolved = false;
+                promises.forEach(p => {
+                    p.then(res => {
+                        if (resolved) return;
+                        if (res) {
+                            resolved = true;
+                            resolve(res);
+                        } else {
+                            finished++;
+                            if (finished === promises.length) resolve(null);
+                        }
+                    }).catch(() => {
+                        if (resolved) return;
+                        finished++;
+                        if (finished === promises.length) resolve(null);
+                    });
+                });
+            });
+        };
 
-        for (const api of tryAPIs) {
-            // Priority 1: Current quality (usually HI_RES/DEFAULT)
-            const result = await attemptResolve(api, track.cloudId);
-            
-            if (result) {
-                if (!result.isDash) {
-                    qqdlTargetUrl = api; // Update global if successful non-dash
-                    return result.url;
-                } else if (!firstDashFound) {
-                    firstDashFound = { api, ...result };
-                }
-            }
+        // Stage 1: Parallel Hi-Res check across all APIs
+        const result = await firstSuccess(tryAPIs.map(api => 
+            attemptResolve(api, track.cloudId).then(res => res ? { api, ...res } : null)
+        ));
 
-            // Priority 2: Quality fallback to avoid DASH
-            // Try LOSSLESS and then HIGH which often return JSON BTS manifests
-            const qualities = ['LOSSLESS', 'HIGH'];
-            for (const q of qualities) {
-                const qResult = await attemptResolve(api, `${track.cloudId}&q=${q}`);
-                if (qResult && !qResult.isDash) {
-                    console.log(`Successfully found non-DASH stream using quality ${q} on ${api}`);
-                    qqdlTargetUrl = api;
-                    return qResult.url;
-                }
+        if (result) {
+            if (!result.isDash) {
+                qqdlTargetUrl = result.api;
+                return result.url;
+            } else {
+                // If it's DASH, the user wants the "first result" even if it's DASH.
+                // But we should still mention it was DASH.
+                console.log(`First available resolution is DASH from ${result.api}`);
+                qqdlTargetUrl = result.api;
+                return { dashManifest: result.url };
             }
         }
 
-        // Priority 3: Accept DASH if no standard stream found
-        if (firstDashFound) {
-            console.log(`All quality fallbacks failed. Proceeding with DASH playback from ${firstDashFound.api}`);
-            qqdlTargetUrl = firstDashFound.api;
-            return { dashManifest: firstDashFound.url };
+        // Stage 2: Parallel Quality fallbacks if HI_RES failed on all APIs
+        console.log("HI_RES failed on all APIs. Trying LOSSLESS/HIGH in parallel...");
+        const fallbackPromises = [];
+        for (const api of tryAPIs) {
+            fallbackPromises.push(attemptResolve(api, `${track.cloudId}&q=LOSSLESS`).then(res => res ? { api, ...res } : null));
+            fallbackPromises.push(attemptResolve(api, `${track.cloudId}&q=HIGH`).then(res => res ? { api, ...res } : null));
+        }
+
+        const fallbackResult = await firstSuccess(fallbackPromises);
+        if (fallbackResult) {
+            if (!fallbackResult.isDash) {
+                console.log(`Successfully found non-DASH stream using quality fallback from ${fallbackResult.api}`);
+                qqdlTargetUrl = fallbackResult.api;
+                return fallbackResult.url;
+            } else {
+                qqdlTargetUrl = fallbackResult.api;
+                return { dashManifest: fallbackResult.url };
+            }
         }
 
         return null;
