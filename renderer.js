@@ -4433,7 +4433,15 @@ const TailscaleRemoteEngine = (() => {
     function connect(host, onFinish) {
         disconnect();
         remoteHost = host;
-        const url = `ws://${host}:41000`;
+        let url = host;
+        
+        // If they didn't provide a full connection string, build one based on the page's protocol
+        if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            // If on https, maybe they are using tailscale serve (443) or a proxy on 41000. We default to 41000
+            // but they can always type 'wss://hostname:443' manually in the box if needed.
+            url = `${protocol}${host}:41000`;
+        }
 
         try {
             ws = new WebSocket(url);
