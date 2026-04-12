@@ -1416,15 +1416,7 @@ body {
         display: flex;
     }
 
-    /* Hide the Rose Header in Landscape to maximize content area */
-    @media (orientation: landscape) {
-        .app-header {
-            display: none !important;
-        }
-        .view {
-            padding-top: 10px !important;
-        }
-    }
+
     .view {
         padding: 16px !important;
         padding-top: 24px !important;
@@ -1798,7 +1790,23 @@ body {
         box-shadow: none;
         border: none;
     }
+
+    /* Ensure 'More' dots are always visible on mobile since there is no hover state */
+    .track-item-more-btn {
+        opacity: 0.7 !important;
+    }
 }
+
+/* Hide the Rose Header in Mobile Landscape to maximize content area */
+@media (orientation: landscape) and (max-height: 500px) {
+    .app-header {
+        display: none !important;
+    }
+    .view {
+        padding-top: 10px !important;
+    }
+}
+
 
 
 
