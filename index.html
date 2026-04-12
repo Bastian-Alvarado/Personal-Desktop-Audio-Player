@@ -74,6 +74,16 @@
                     <div class="loading">Play a track to see history...</div>
                 </div>
             </div>
+            
+            <div id="downloaded-music-section" style="margin-bottom: 40px;">
+                <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                    <h2 class="section-heading" style="font-size: 28px; font-weight: 800; color: white; margin: 0;">Downloaded Music</h2>
+                    <button id="view-all-downloads-btn" class="secondary-action-btn" style="padding: 8px 16px; border-radius: 20px; font-size: 13px;">View All</button>
+                </div>
+                <div id="downloaded-music-list" class="album-row">
+                    <div class="loading">No downloads yet.</div>
+                </div>
+            </div>
 
             <div id="playlists-section" style="margin-bottom: 40px;">
                 <h2 class="section-heading" style="margin-bottom: 24px; font-size: 28px; font-weight: 800; color: white;">Your Playlists</h2>
@@ -96,6 +106,22 @@
             <h2 class="section-heading" style="margin-bottom: 24px; font-size: 28px; font-weight: 800; color: white;">All Artists</h2>
             <div id="all-artists-grid" class="album-grid">
                 <div class="loading">Loading artists...</div>
+            </div>
+        </div>
+
+        <!-- Downloads View -->
+        <div id="downloads-view" class="view hidden" style="padding: 24px; padding-top: 40px;">
+            <div class="header-with-back" style="display: flex; align-items: center; gap: 16px; margin-bottom: 24px;">
+                <button id="downloads-back-btn" class="nav-button" style="background: rgba(255,255,255,0.05); padding: 8px 16px; border-radius: 20px;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="19" y1="12" x2="5" y2="12"></line>
+                        <polyline points="12 19 5 12 12 5"></polyline>
+                    </svg>
+                </button>
+                <h2 class="section-heading" style="font-size: 28px; font-weight: 800; color: white; margin: 0;">Offline Downloads</h2>
+            </div>
+            <div id="downloads-list-container" class="track-list" style="padding: 0 20px 120px 20px;">
+                <div class="loading">No downloads yet.</div>
             </div>
         </div>
 
@@ -220,7 +246,7 @@
             
             <div class="app-container glass-panel" style="flex-direction: column; overflow: hidden; padding: 24px; padding-bottom: 80px; overflow-y: auto;">
                 <h2 class="section-heading" style="font-size: 20px; text-transform: uppercase; font-weight: 800; margin-bottom: 16px; color: var(--accent);">Top Tracks</h2>
-                <div id="artist-track-list" class="track-list" style="max-height: 250px; overflow-y: auto; margin-bottom: 32px;"></div>
+                <div id="artist-track-list" class="track-list" style="min-height: 150px; margin-bottom: 32px;"></div>
                 
                 <h2 id="artist-album-heading" class="section-heading" style="font-size: 20px; text-transform: uppercase; font-weight: 800; margin-bottom: 16px; color: var(--accent);">Albums</h2>
                 <div id="artist-album-grid" class="album-grid" style="margin-bottom: 32px;"></div>

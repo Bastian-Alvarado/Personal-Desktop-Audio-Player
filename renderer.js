@@ -21,7 +21,7 @@ async function initCloudTarget() {
 }
 
 function getTidalImage(hash, size = '320x320') {
-    if (!hash) return '';
+    if (!hash || typeof hash !== 'string') return '';
     return `https://resources.tidal.com/images/${hash.replace(/-/g, '/')}/${size}.jpg`;
 }
 
@@ -102,6 +102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const playlistTrackList = document.getElementById('playlist-track-list');
     const playlistBackBtn = document.getElementById('playlist-back-btn');
     const playlistStrip = document.getElementById('playlist-strip');
+    const downloadsListContainer = document.getElementById('downloads-list-container');
     const createPlaylistModal = document.getElementById('create-playlist-modal');
     const playlistNameInput = document.getElementById('playlist-name-input');
     const createPlaylistCancelBtn = document.getElementById('create-playlist-cancel-btn');
@@ -386,8 +387,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             await ensureDashPlayer();
             
+            // Critical: Always unload previous stream to reset MediaSource state
+            await shakaPlayerInstance.unload();
+            
             let manifestDataUrl;
-            if (manifest.trim().startsWith('<?xml') || manifest.trim().startsWith('<MPD')) {
+            if (manifest.startsWith('offline:')) {
+                // For downloaded DASH, the manifest is a Shaka Offline URI
+                manifestDataUrl = manifest;
+            } else if (manifest.trim().startsWith('<?xml') || manifest.trim().startsWith('<MPD')) {
                 // For XML strings, encode to data URL
                 manifestDataUrl = `data:application/dash+xml;charset=utf-8,${encodeURIComponent(manifest)}`;
             } else {
@@ -396,6 +403,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 manifestDataUrl = `data:application/dash+xml;base64,${cleanManifest}`;
             }
 
+            console.log("Loading DASH stream:", manifestDataUrl.startsWith('data:') ? 'Data URI' : manifestDataUrl);
             await shakaPlayerInstance.load(manifestDataUrl);
             audioPlayer.play().catch(e => console.error("Initial DASH play failed", e));
         } catch (e) {
@@ -691,6 +699,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Settings Panel Logic
     function openSettings(push = true) {
         if (push) navigateTo('settings');
+        hideOverlays();
+        
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+            v.classList.add('hidden');
+        });
+        
+        settingsView.classList.remove('hidden');
         settingsView.classList.add('active');
         settingsBtn.classList.add('settings-btn-active');
     }
@@ -1151,7 +1167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     if (bottomOfflineBtn) {
-        bottomOfflineBtn.addEventListener('click', () => {
+        bottomOfflineBtn.addEventListener('click', async () => {
             if (!globalPlayingTrack) return;
             if (globalPlayingTrack.isLocal) {
                 console.log('Local tracks are already offline.');
@@ -1161,12 +1177,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             const isOffline = downloadedTracksMap.has(globalPlayingTrack.url);
             const isDownloading = pendingDownloads.has(globalPlayingTrack.url);
             
-            if (!isOffline && !isDownloading) {
+            if (isOffline) {
+                if (confirm(`Remove "${globalPlayingTrack.metadata.title}" from offline storage?`)) {
+                    await removeOfflineTrack(globalPlayingTrack.url);
+                    await syncOfflineState();
+                }
+            } else if (!isDownloading) {
                 initiateDownload(globalPlayingTrack);
-            } else if (isOffline) {
-                // Future idea: maybe clicking a downloaded song shows info or allows deletion?
-                // For now, do nothing.
-                console.log('Track is already available offline');
+            } else {
+                console.log('Already downloading...');
             }
         });
     }
@@ -1673,6 +1692,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (stateData.playlist) openPlaylistView(stateData.playlist, false);
                 break;
             case 'settings': openSettings(false); break;
+            case 'downloads': switchToDownloadsView(false); break;
             case 'queue': showQueueOverlay(); break;
             case 'immersive': showImmersiveOverlay(); break;
         }
@@ -1690,51 +1710,65 @@ document.addEventListener('DOMContentLoaded', async () => {
     function switchToHomeView(push = true) {
         if (push) navigateTo('home');
         hideOverlays();
-        albumView.classList.remove('active'); albumView.classList.add('hidden');
-        searchView.classList.remove('active'); searchView.classList.add('hidden');
-        artistView.classList.remove('active'); artistView.classList.add('hidden');
-        allAlbumsView.classList.remove('active'); allAlbumsView.classList.add('hidden');
-        allArtistsView.classList.remove('active'); allArtistsView.classList.add('hidden');
-        if (playlistView) { playlistView.classList.remove('active'); playlistView.classList.add('hidden'); }
         
-        homeView.classList.remove('hidden'); homeView.classList.add('active');
+        // Hide all views to prevent overlap
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+            v.classList.add('hidden');
+        });
+        
+        homeView.classList.remove('hidden');
+        homeView.classList.add('active');
         updateMobileNavActive(mobileHomeBtn);
+        renderDownloadedSection();
+    }
+
+    function switchToDownloadsView(push = true) {
+        if (push) navigateTo('downloads');
+        hideOverlays();
+        document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+        document.getElementById('downloads-view').classList.remove('hidden');
+        document.getElementById('downloads-view').classList.add('active');
+        renderAllDownloadsView();
     }
 
     function switchToAllAlbumsView(push = true) {
         if (push) navigateTo('allAlbums');
         hideOverlays();
-        albumView.classList.remove('active'); albumView.classList.add('hidden');
-        searchView.classList.remove('active'); searchView.classList.add('hidden');
-        artistView.classList.remove('active'); artistView.classList.add('hidden');
-        allArtistsView.classList.remove('active'); allArtistsView.classList.add('hidden');
-        homeView.classList.remove('active'); homeView.classList.add('hidden');
         
-        allAlbumsView.classList.remove('hidden'); allAlbumsView.classList.add('active');
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+            v.classList.add('hidden');
+        });
+        
+        allAlbumsView.classList.remove('hidden');
+        allAlbumsView.classList.add('active');
     }
 
     function switchToAllArtistsView(push = true) {
         if (push) navigateTo('allArtists');
         hideOverlays();
-        albumView.classList.remove('active'); albumView.classList.add('hidden');
-        searchView.classList.remove('active'); searchView.classList.add('hidden');
-        artistView.classList.remove('active'); artistView.classList.add('hidden');
-        allAlbumsView.classList.remove('active'); allAlbumsView.classList.add('hidden');
-        homeView.classList.remove('active'); homeView.classList.add('hidden');
         
-        allArtistsView.classList.remove('hidden'); allArtistsView.classList.add('active');
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+            v.classList.add('hidden');
+        });
+        
+        allArtistsView.classList.remove('hidden');
+        allArtistsView.classList.add('active');
     }
 
     function switchToSearchView(push = true) {
         if (push) navigateTo('search', { query: searchInput.value || (mobileSearchInput ? mobileSearchInput.value : '') });
         hideOverlays();
-        albumView.classList.remove('active'); albumView.classList.add('hidden');
-        homeView.classList.remove('active'); homeView.classList.add('hidden');
-        artistView.classList.remove('active'); artistView.classList.add('hidden');
-        allAlbumsView.classList.remove('active'); allAlbumsView.classList.add('hidden');
-        allArtistsView.classList.remove('active'); allArtistsView.classList.add('hidden');
         
-        searchView.classList.remove('hidden'); searchView.classList.add('active');
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+            v.classList.add('hidden');
+        });
+        
+        searchView.classList.remove('hidden');
+        searchView.classList.add('active');
         updateMobileNavActive(mobileSearchBtn);
     }
 
@@ -2001,6 +2035,29 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ── Music Library Initialization ──────────────────
 
+    function updatePlayerBarOfflineUI() {
+        if (!globalPlayingTrack || !bottomOfflineBtn) return;
+        
+        const isOffline = downloadedTracksMap.has(globalPlayingTrack.url);
+        const downloadProgress = pendingDownloads.get(globalPlayingTrack.url);
+        
+        if (isOffline) {
+            bottomOfflineBtn.classList.add('downloaded');
+            bottomOfflineBtn.classList.remove('downloading');
+            bottomOfflineBtn.title = 'Available Offline (Click to remove)';
+            bottomOfflineBtn.style.setProperty('--progress', '100%');
+        } else if (downloadProgress !== undefined) {
+            bottomOfflineBtn.classList.remove('downloaded');
+            bottomOfflineBtn.classList.add('downloading');
+            bottomOfflineBtn.title = `Downloading... ${Math.round(downloadProgress * 100)}%`;
+            bottomOfflineBtn.style.setProperty('--progress', `${downloadProgress * 100}%`);
+        } else {
+            bottomOfflineBtn.classList.remove('downloaded', 'downloading');
+            bottomOfflineBtn.title = 'Remote Source (Click to download)';
+            bottomOfflineBtn.style.setProperty('--progress', '0%');
+        }
+    }
+
     async function initializeMusicLibrary() {
         if (!isQqdlInitialized) {
             await initCloudTarget();
@@ -2159,6 +2216,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 currentPlaylistContext = [trackObj];
                 commitTrackChange(0);
             });
+
+            const artistLinkNode = card.querySelector('.album-card-artist');
+            if (artistLinkNode) {
+                artistLinkNode.style.cursor = 'pointer';
+                artistLinkNode.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (trackData.artist) openArtistView(trackData.artist);
+                });
+            }
             card.addEventListener('click', () => {
                 currentPlaylistContext = [trackObj];
                 commitTrackChange(0);
@@ -2181,9 +2247,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function openAlbumView(albumInfo, push = true) {
+        if (!albumInfo) return;
         if (push) navigateTo('album', { albumInfo });
-        switchToAlbumView(false);
-        activeViewAlbum = albumInfo;
+        
+        hideOverlays();
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+            v.classList.add('hidden');
+        });
+        
+        activeViewAlbum = albumInfo; 
+        albumView.classList.remove('hidden');
+        albumView.classList.add('active');
 
         // Use cached version if available
         if (albumInfo.isCloudGenerated && !albumInfo.isFullyPopulated && albumInfo.albumId) {
@@ -2544,8 +2619,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function openArtistView(artistName, push = true) {
+        if (!artistName) return;
         if (push) navigateTo('artist', { artistName });
-        switchToArtistView(false);
+
+        hideOverlays();
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+            v.classList.add('hidden');
+        });
+        
+        artistView.classList.remove('hidden');
+        artistView.classList.add('active');
         
         artistHeroName.textContent = artistName;
         artistHeroMeta.textContent = 'Loading artist...';
@@ -2593,32 +2677,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             const [discRes, topTracksFromSearch] = await Promise.all([
-                fetch(`${qqdlTargetUrl}/artist/?f=${artistId}&skip_tracks=true`).catch(() => null),
+                fetch(`${qqdlTargetUrl}/artist/?f=${artistId}`).catch(() => null),
                 Promise.resolve(searchTracks)
             ]);
 
-            const artistTopTracks = topTracksFromSearch
-                .filter(t => t.artist && t.artist.name.toLowerCase() === artistName.toLowerCase())
-                .map(t => ({
-                    url: `qqdl://${t.id}`,
-                    localPath: '',
-                    isCloud: true,
-                    cloudId: t.id,
-                    filename: t.title,
-                    metadata: {
-                        title: t.title,
-                        artist: t.artist.name,
-                        album: t.album ? t.album.title : 'Unknown Album',
-                        duration: t.duration,
-                        coverUrl: t.album ? getTidalImage(t.album.cover, '320x320') : null
-                    }
-                }));
-
             const finalAlbums = [];
             const finalSingles = [];
+            let profileTopTracks = [];
 
             if (discRes && discRes.ok) {
                 const discData = await discRes.json().catch(() => ({}));
+                
+                // 1. Extract Discography
                 const allReleases = (discData && discData.albums && discData.albums.items) ? discData.albums.items : [];
                 allReleases.forEach(album => {
                     const albumObj = {
@@ -2634,7 +2704,46 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (type === 'SINGLE' || type === 'EP') finalSingles.push(albumObj);
                     else finalAlbums.push(albumObj);
                 });
+
+                // 2. Extract Top Tracks from Profile (if available)
+                profileTopTracks = (discData && discData.topTracks) ? discData.topTracks : 
+                                   ((discData && discData.tracks) ? discData.tracks : []);
             }
+
+            // 3. Merge profile tracks with search tracks (preferring profile tracks)
+            const mergedMap = new Map();
+            
+            // Helper to map raw bridge track to app track
+            const mapTrack = (t) => ({
+                url: `qqdl://${t.id}`,
+                localPath: '',
+                isCloud: true,
+                cloudId: t.id,
+                filename: t.title,
+                metadata: {
+                    title: t.title,
+                    artist: (t.artist && t.artist.name) ? t.artist.name : artistName,
+                    album: t.album ? t.album.title : 'Unknown Album',
+                    duration: t.duration,
+                    coverUrl: t.album ? getTidalImage(t.album.cover, '320x320') : null
+                }
+            });
+
+            // Process profile tracks first
+            profileTopTracks.forEach(t => {
+                if (t.id && !mergedMap.has(t.id)) {
+                    mergedMap.set(t.id, mapTrack(t));
+                }
+            });
+
+            // Fallback to search results for missing tracks
+            topTracksFromSearch.forEach(t => {
+                if (t.id && !mergedMap.has(t.id) && t.artist && t.artist.name.toLowerCase() === artistName.toLowerCase()) {
+                    mergedMap.set(t.id, mapTrack(t));
+                }
+            });
+
+            const artistTopTracks = Array.from(mergedMap.values()).slice(0, 15);
 
             const artistData = { artistTopTracks, finalAlbums, finalSingles };
             updatePersistedCache('artistViewCache', artistName, artistData);
@@ -3195,7 +3304,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     function openPlaylistView(playlist, push = true) {
         if (push) navigateTo('playlist', { playlist });
         activePlaylistId = playlist.id;
-        switchToPlaylistView(false);
+
+        hideOverlays();
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+            v.classList.add('hidden');
+        });
+        
+        playlistView.classList.remove('hidden');
+        playlistView.classList.add('active');
         
         // Find first cover for background
         const firstCoverTrack = playlist.tracks.find(t => t.metadata && t.metadata.hasCover);
@@ -3349,6 +3466,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     function renderRecentArtists() {
 
         const recentArtistList = document.getElementById('recent-artist-list');
+        const downloadedMusicList = document.getElementById('downloaded-music-list');
+        const viewAllDownloadsBtn = document.getElementById('view-all-downloads-btn');
+        const downloadsBackBtn = document.getElementById('downloads-back-btn');
+
+        if (viewAllDownloadsBtn) {
+            viewAllDownloadsBtn.addEventListener('click', () => switchToDownloadsView());
+        }
+        if (downloadsBackBtn) {
+            downloadsBackBtn.addEventListener('click', () => switchToHomeView());
+        }
         if (!recentArtistList) return;
         
         let recentEntries = [];
@@ -3408,6 +3535,121 @@ document.addEventListener('DOMContentLoaded', async () => {
         recentArtistList.appendChild(allBtnContainer);
 
         renderAllArtistsGrid();
+    }
+
+    async function getAllDownloadedTracks() {
+        let allDownloads = [];
+        
+        // 1. Electron downloads
+        if (window.electronAPI) {
+            const meta = await window.electronAPI.getDownloadedList();
+            for (const [url, info] of Object.entries(meta)) {
+                allDownloads.push({
+                    url: url,
+                    title: info.metadata.title,
+                    artist: info.metadata.artist,
+                    album: info.metadata.album,
+                    coverUrl: info.metadata.coverUrl,
+                    downloadedAt: info.downloadedAt || 0,
+                    isDash: false,
+                    isCloud: true,
+                    cloudId: url.replace('qqdl://', ''),
+                    metadata: info.metadata
+                });
+            }
+        }
+        
+        // 2. IndexedDB downloads (PWA and DASH)
+        const records = await getAllOfflineTrackRecords();
+        records.forEach(record => {
+            allDownloads.push({
+                url: record.id,
+                title: record.metadata.title,
+                artist: record.metadata.artist,
+                album: record.metadata.album,
+                coverUrl: record.metadata.coverUrl,
+                downloadedAt: record.downloadedAt || 0,
+                isDash: record.isDash,
+                isCloud: true,
+                cloudId: record.id.replace('qqdl://', ''),
+                metadata: record.metadata
+            });
+        });
+
+        // Deduplicate by URL (prefer IndexedDB if both exist for some reason)
+        const uniqueMap = new Map();
+        allDownloads.forEach(d => uniqueMap.set(d.url, d));
+        return Array.from(uniqueMap.values()).sort((a,b) => b.downloadedAt - a.downloadedAt);
+    }
+
+    async function renderDownloadedSection() {
+        const list = document.getElementById('downloaded-music-list');
+        if (!list) return;
+
+        const all = await getAllDownloadedTracks();
+        const latest = all.slice(0, 8);
+
+        if (latest.length === 0) {
+            list.innerHTML = '<div style="color:var(--text-secondary); padding: 20px;">No downloads yet.</div>';
+            return;
+        }
+
+        list.innerHTML = '';
+        latest.forEach(track => {
+            const card = document.createElement('div');
+            card.className = 'album-card';
+            const coverUrl = track.coverUrl || '';
+            const artHtml = coverUrl
+                ? `<img src="${coverUrl}" class="album-card-art" alt="" crossorigin="anonymous">`
+                : `<div class="album-card-art"></div>`;
+
+            card.innerHTML = `
+                <div class="card-art-wrapper">
+                    ${artHtml}
+                    <button class="card-play-btn">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"></path></svg>
+                    </button>
+                </div>
+                <div class="album-card-title" title="${track.title}">${track.title}</div>
+                <div class="album-card-artist">${track.artist}</div>
+            `;
+            
+            card.querySelector('.card-play-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                playTrack(track, track.title, track.artist);
+            });
+            
+            const artistLink = card.querySelector('.album-card-artist');
+            if (artistLink) {
+                artistLink.style.cursor = 'pointer';
+                artistLink.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (track.artist) openArtistView(track.artist);
+                });
+            }
+
+            card.addEventListener('click', () => {
+                if (track.metadata && track.metadata.album) {
+                    showSearch(track.metadata.album);
+                } else {
+                    playTrack(track, track.title, track.artist);
+                }
+            });
+            
+            list.appendChild(card);
+        });
+    }
+
+    async function renderAllDownloadsView() {
+        if (!downloadsListContainer) return;
+
+        const all = await getAllDownloadedTracks();
+        if (all.length === 0) {
+            downloadsListContainer.innerHTML = '<div style="color:var(--text-secondary); padding: 20px;">No offline downloads found.</div>';
+            return;
+        }
+
+        renderTrackList(all, downloadsListContainer);
     }
 
     function renderAllArtistsGrid() {
@@ -3608,17 +3850,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // Update Bottom Offline Icon
-        if (bottomOfflineBtn) {
-            bottomOfflineBtn.classList.toggle('downloaded', !!localPath);
-            bottomOfflineBtn.classList.toggle('is-local', false);
-            bottomOfflineBtn.classList.toggle('is-both', false);
-            
-            if (localPath) {
-                bottomOfflineBtn.title = 'Available Offline';
-            } else {
-                bottomOfflineBtn.title = 'Cloud Stream';
-            }
-        }
+        updatePlayerBarOfflineUI();
         
         bottomTitle.textContent = title;
         bottomArtist.textContent = artist;
@@ -3815,26 +4047,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // Update Global Player Bar offline status if something is playing
-        if (globalPlayingTrack && bottomOfflineBtn) {
-            const isOffline = downloadedTracksMap.has(globalPlayingTrack.url);
-            const downloadProgress = pendingDownloads.get(globalPlayingTrack.url);
-            
-            if (isOffline) {
-                bottomOfflineBtn.classList.add('downloaded');
-                bottomOfflineBtn.classList.remove('downloading');
-                bottomOfflineBtn.title = 'Available Offline';
-                bottomOfflineBtn.style.setProperty('--progress', '100%');
-            } else if (downloadProgress !== undefined) {
-                bottomOfflineBtn.classList.remove('downloaded');
-                bottomOfflineBtn.classList.add('downloading');
-                bottomOfflineBtn.title = `Downloading... ${Math.round(downloadProgress * 100)}%`;
-                bottomOfflineBtn.style.setProperty('--progress', `${downloadProgress * 100}%`);
-            } else {
-                bottomOfflineBtn.classList.remove('downloaded', 'downloading');
-                bottomOfflineBtn.title = 'Remote Source';
-                bottomOfflineBtn.style.setProperty('--progress', '0%');
-            }
-        }
+        updatePlayerBarOfflineUI();
 
         // Update track list offline icons in currently active containers
         const containers = [trackListElement, playlistTrackList, searchTrackList, artistTrackList];
@@ -3906,31 +4119,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         refreshCurrentView();
     }
 
-    function updateAlbumHeroOfflineStatus(album) {
-        const downloadAlbumBtn = albumHeroDiv.querySelector('.download-album-btn');
-        if (!downloadAlbumBtn) return;
-        
-        const isAlbumOffline = album.tracks.every(t => downloadedTracksMap.has(t.url));
-        const isAlbumDownloading = album.tracks.some(t => pendingDownloads.has(t.url));
-
-        if (isAlbumOffline) {
-            downloadAlbumBtn.classList.add('active');
-            downloadAlbumBtn.innerHTML = `
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                <span>Downloaded</span>
-            `;
-        } else if (isAlbumDownloading) {
-            downloadAlbumBtn.innerHTML = `<span>Downloading...</span>`;
-        } else {
-            downloadAlbumBtn.classList.remove('active');
-            downloadAlbumBtn.innerHTML = `
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line>
-                </svg>
-                <span>Download Album</span>
-            `;
-        }
-    }
 
     async function removeAlbumOffline(album) {
         if (!confirm(`Are you sure you want to remove all ${album.tracks.length} tracks of "${album.name}" from offline storage?`)) return;
