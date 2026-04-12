@@ -396,6 +396,58 @@ document.addEventListener('DOMContentLoaded', async () => {
     let pendingDownloads = new Map(); // url -> progress
     let pendingUploads = new Set();  // url
 
+    // --- PWA Offline IndexedDB Helper ---
+    const DB_NAME = 'SimonOffline';
+    const STORE_NAME = 'tracks';
+
+    function openOfflineDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                }
+            };
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async function saveTrackToDB(id, blob, metadata) {
+        const db = await openOfflineDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction([STORE_NAME], 'readwrite');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.put({ id, blob, metadata, timestamp: Date.now() });
+            request.onsuccess = () => resolve();
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async function deleteTrackFromDB(id) {
+        const db = await openOfflineDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction([STORE_NAME], 'readwrite');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.delete(id);
+            request.onsuccess = () => resolve();
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async function getAllOfflineTrackIds() {
+        if (typeof indexedDB === 'undefined') return [];
+        const db = await openOfflineDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction([STORE_NAME], 'readonly');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.getAllKeys();
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+
     // Lyrics Logic State
     const lyricsContainer = document.getElementById('immersive-lyrics-container');
     let lyricsData = [];
@@ -3456,8 +3508,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const localPath = downloadedTracksMap.get(track.url);
 
-        if (localPath && window.electronAPI) {
-            fullAudioUrl = `simon-offline://${encodeURIComponent(localPath)}`;
+        if (localPath) {
+            if (window.electronAPI) {
+                fullAudioUrl = `simon-offline://${encodeURIComponent(localPath)}`;
+            } else {
+                // Special URL that Service Worker will intercept for Range-Request support
+                fullAudioUrl = `./pwa-offline/${encodeURIComponent(track.url)}`;
+            }
         }
 
         // Update Bottom Offline Icon
@@ -3551,7 +3608,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ── Offline Helper Logic ────────────────────────────────────────────────
     async function initiateDownload(track) {
-        if (!window.electronAPI) return;
+        if (!window.electronAPI && typeof indexedDB === 'undefined') {
+            alert("Offline storage is not supported in this browser.");
+            return;
+        }
         
         let targetUrl = track.url;
         if (track.isCloud && track.url.startsWith('qqdl://')) {
@@ -3560,24 +3620,35 @@ document.addEventListener('DOMContentLoaded', async () => {
                 alert("Failed to resolve cloud stream for download.");
                 return;
             }
-            targetUrl = resolved;
+            targetUrl = typeof resolved === 'object' ? null : resolved;
+            if (!targetUrl) {
+                alert("DASH streams cannot be downloaded for offline use yet.");
+                return;
+            }
         }
 
-        pendingDownloads.set(track.url, 0); // use internal un-resolved tracking url for UI tracking
+        pendingDownloads.set(track.url, 0); 
         refreshCurrentView();
 
         try {
-            const result = await window.electronAPI.downloadTrack({
-                url: targetUrl,
-                originalTrackingUrl: track.url, 
-                metadata: track.metadata
-            });
-
-            if (result.success) {
+            if (window.electronAPI) {
+                const result = await window.electronAPI.downloadTrack({
+                    url: targetUrl,
+                    originalTrackingUrl: track.url, 
+                    metadata: track.metadata
+                });
+                if (result.success) await syncOfflineState();
+            } else {
+                // PWA Native Download
+                const response = await fetch(targetUrl);
+                if (!response.ok) throw new Error('Network fetch failed');
+                const blob = await response.blob();
+                await saveTrackToDB(track.url, blob, track.metadata);
                 await syncOfflineState();
             }
         } catch (e) {
             console.error('Download failed', e);
+            alert("Failed to download track.");
         } finally {
             pendingDownloads.delete(track.url);
             refreshCurrentView();
@@ -3588,12 +3659,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Obsolete function in standalone. Keeping to prevent ReferenceErrors from any missed UI buttons.
     }
 
-    async function removeOfflineTrack(trackPath) {
-        if (!window.electronAPI) return;
-        // Backend full path resolution removed. Passing our local tracking ID back.
-        const success = await window.electronAPI.deleteOfflineTrack(trackPath);
-        if (success) {
-            downloadedTracksMap.delete(trackPath);
+    async function removeOfflineTrack(trackUrl) {
+        if (window.electronAPI) {
+            const success = await window.electronAPI.deleteOfflineTrack(trackUrl);
+            if (success) {
+                downloadedTracksMap.delete(trackUrl);
+                refreshCurrentView();
+            }
+        } else {
+            await deleteTrackFromDB(trackUrl);
+            downloadedTracksMap.delete(trackUrl);
             refreshCurrentView();
         }
     }
@@ -3699,8 +3774,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const trackPath = fullUrl.replace(serverBaseUrl, '');
                 downloadedTracksMap.set(trackPath, info.localPath);
             }
-            refreshCurrentView();
+        } else {
+            const keys = await getAllOfflineTrackIds();
+            downloadedTracksMap.clear();
+            keys.forEach(k => downloadedTracksMap.set(k, 'pwa-stored'));
         }
+        refreshCurrentView();
     }
 
     function updateAlbumHeroOfflineStatus(album) {
