@@ -2454,6 +2454,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             const title = (track.metadata && track.metadata.title) ? track.metadata.title : track.filename;
             const artist = (track.metadata && track.metadata.artist) ? track.metadata.artist : 'Unknown Artist';
 
+            let coverHtml = '';
+            if (track.metadata && track.metadata.coverUrl) {
+                coverHtml = `<div class="track-item-cover"><img src="${track.metadata.coverUrl}" crossorigin="anonymous" alt="cover"></div>`;
+            } else if (track.metadata && track.metadata.hasCover && track.relativePath && typeof serverBaseUrl !== 'undefined') {
+                const pictureUrl = `${serverBaseUrl}/api/cover?path=${encodeURIComponent(track.relativePath)}`;
+                coverHtml = `<div class="track-item-cover"><img src="${pictureUrl}" alt="cover"></div>`;
+            } else {
+                coverHtml = `<div class="track-item-cover"><svg class="fallback-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg></div>`;
+            }
+
             // Drag handle (playlist view only)
             const dragHandleHtml = isPlaylistView ? `
                 <div class="drag-handle" draggable="true">
@@ -2508,6 +2518,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             trackItem.innerHTML = `
                 ${dragHandleHtml}
+                ${coverHtml}
                 <div class="track-item-info">
                     <div class="track-item-title">${title}</div>
                     <div class="track-item-artist"><span class="artist-link" style="cursor: pointer;">${artist}</span></div>
@@ -4271,6 +4282,41 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                 }
             }
+        }
+    });
+    // ── Mobile Landscape Fullscreen Auto-Manager ──────────────────────────
+    function manageLandscapeFullscreen() {
+        const isMobile = window.innerWidth <= 1024 || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+        const isLandscape = window.innerWidth > window.innerHeight;
+
+        if (isMobile && isLandscape) {
+            // Enter fullscreen if in landscape and not already
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(() => {
+                    // Browsers commonly block this if not triggered by direct user interaction
+                    // The fallback click listener below will catch it on their next tap
+                });
+            }
+        } else if (isMobile && !isLandscape) {
+            // Exit fullscreen if rotating back to portrait
+            if (document.fullscreenElement) {
+                document.exitFullscreen().catch(() => {});
+            }
+        }
+    }
+
+    // Check on rotation and screen resize
+    window.addEventListener('resize', manageLandscapeFullscreen);
+    window.addEventListener('orientationchange', () => setTimeout(manageLandscapeFullscreen, 100));
+
+    // Fallback: If the browser blocked the automatic request fullscreen on rotation, 
+    // the next tap anywhere on the screen will trigger it seamlessly.
+    document.addEventListener('click', () => {
+        const isMobile = window.innerWidth <= 1024 || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+        const isLandscape = window.innerWidth > window.innerHeight;
+        
+        if (isMobile && isLandscape && !document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch(() => {});
         }
     });
 
