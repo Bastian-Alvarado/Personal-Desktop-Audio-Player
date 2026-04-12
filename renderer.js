@@ -283,6 +283,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentTrackIndex = -1;
     let isShuffleActive = false;
     let unplayedIndices = [];
+    let currentViewInfo = {
+        tracks: [],
+        container: null,
+        isPlaylistView: false,
+        playlistId: null
+    };
     let repeatMode = 0;
     let globalPlayingTrack = null;
     let allPlaylists = [];
@@ -292,6 +298,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let lastSearchController = null;
     let artistSearchController = null;
     let dashActive = false;
+    let activeViewAlbum = null;
     
     // --- View Caching (Persistent) ---
     const VIEW_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
@@ -335,10 +342,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     // --- DASH Player State ---
     let shakaLibLoaded = false;
     let shakaPlayerInstance = null;
+    let shakaStorageInstance = null;
 
     async function ensureDashPlayer() {
-        if (shakaLibLoaded) return true;
-        console.log("Loading Shaka Player for DASH stream support...");
+        if (window.shaka && shakaPlayerInstance && shakaStorageInstance) return true;
+        
+        if (window.shaka) {
+            shakaLibLoaded = true;
+            shaka.polyfill.installAll();
+            if (shaka.Player.isBrowserSupported()) {
+                if (!shakaPlayerInstance) shakaPlayerInstance = new shaka.Player(audioPlayer);
+                if (!shakaStorageInstance) shakaStorageInstance = new shaka.offline.Storage(shakaPlayerInstance);
+                return true;
+            }
+        }
+
+        console.log("Loading Shaka Player for DASH & Offline support...");
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.src = 'https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.5/shaka-player.compiled.js';
@@ -347,15 +366,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 shaka.polyfill.installAll();
                 if (shaka.Player.isBrowserSupported()) {
                     shakaPlayerInstance = new shaka.Player(audioPlayer);
+                    shakaStorageInstance = new shaka.offline.Storage(shakaPlayerInstance);
+                    
                     shakaPlayerInstance.addEventListener('error', (event) => {
                         console.error('Shaka Player error', event.detail);
                     });
+                    
                     resolve(true);
                 } else {
                     reject(new Error('Browser not supported for DASH.'));
                 }
             };
-            script.onerror = () => reject(new Error('Failed to load Shaka Player.'));
+            script.onerror = () => reject(new Error('Failed to load Shaka Player script. Check your internet connection.'));
             document.head.appendChild(script);
         });
     }
@@ -414,13 +436,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    async function saveTrackToDB(id, blob, metadata) {
+    async function saveTrackToDB(id, data, metadata, isDash = false) {
         const db = await openOfflineDB();
         return new Promise((resolve, reject) => {
             const transaction = db.transaction([STORE_NAME], 'readwrite');
             const store = transaction.objectStore(STORE_NAME);
-            const request = store.put({ id, blob, metadata, timestamp: Date.now() });
+            const record = { id, metadata, timestamp: Date.now(), isDash };
+            if (isDash) record.offlineUri = data;
+            else record.blob = data;
+            
+            const request = store.put(record);
             request.onsuccess = () => resolve();
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async function getTrackRecordFromDB(id) {
+        const db = await openOfflineDB();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction([STORE_NAME], 'readonly');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.get(id);
+            request.onsuccess = (e) => resolve(e.target.result);
             request.onerror = (e) => reject(e.target.error);
         });
     }
@@ -436,16 +473,50 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    async function getAllOfflineTrackIds() {
+    async function getAllOfflineTrackRecords() {
         if (typeof indexedDB === 'undefined') return [];
         const db = await openOfflineDB();
         return new Promise((resolve, reject) => {
             const transaction = db.transaction([STORE_NAME], 'readonly');
             const store = transaction.objectStore(STORE_NAME);
-            const request = store.getAllKeys();
+            const request = store.getAll();
             request.onsuccess = (e) => resolve(e.target.result);
             request.onerror = (e) => reject(e.target.error);
         });
+    }
+
+    async function downloadDashTrack(track, manifest) {
+        try {
+            if (!window.isSecureContext) {
+                throw new Error("DASH offline storage requires a secure context (HTTPS or localhost).");
+            }
+
+            await ensureDashPlayer();
+            
+            let manifestDataUrl;
+            if (manifest.trim().startsWith('<?xml') || manifest.trim().startsWith('<MPD')) {
+                manifestDataUrl = `data:application/dash+xml;charset=utf-8,${encodeURIComponent(manifest)}`;
+            } else {
+                const cleanManifest = manifest.replace(/\s/g, '');
+                manifestDataUrl = `data:application/dash+xml;base64,${cleanManifest}`;
+            }
+
+            const metadata = {
+                title: (track.metadata && track.metadata.title) ? track.metadata.title : "Unknown Title",
+                artist: (track.metadata && track.metadata.artist) ? track.metadata.artist : "Unknown Artist",
+                album: (track.metadata && track.metadata.album) ? track.metadata.album : "Unknown Album",
+                duration: (track.metadata && track.metadata.duration) ? track.metadata.duration : 0
+            };
+
+            const content = await shakaStorageInstance.store(manifestDataUrl, metadata);
+            const offlineUri = content.offlineUri;
+            
+            await saveTrackToDB(track.url, offlineUri, track.metadata, true);
+            await syncOfflineState();
+        } catch (e) {
+            console.error('DASH Download failed:', e);
+            throw e;
+        }
     }
 
     // Lyrics Logic State
@@ -2068,6 +2139,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     coverUrl: trackData.coverUrl
                 }
             };
+            currentViewInfo = { tracks: recentTracks.map(t => ({
+                url: `qqdl://${t.cloudId}`,
+                localPath: '',
+                isCloud: true,
+                cloudId: t.cloudId,
+                filename: t.title,
+                metadata: {
+                    title: t.title,
+                    artist: t.artist,
+                    album: t.album,
+                    duration: t.duration,
+                    coverUrl: t.coverUrl
+                }
+            })), container: recentSongList, isPlaylistView: false, playlistId: null };
+
             card.querySelector('.card-play-btn').addEventListener('click', (e) => {
                 e.stopPropagation();
                 currentPlaylistContext = [trackObj];
@@ -2097,6 +2183,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function openAlbumView(albumInfo, push = true) {
         if (push) navigateTo('album', { albumInfo });
         switchToAlbumView(false);
+        activeViewAlbum = albumInfo;
 
         // Use cached version if available
         if (albumInfo.isCloudGenerated && !albumInfo.isFullyPopulated && albumInfo.albumId) {
@@ -2222,8 +2309,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             editAlbumBtn.addEventListener('click', () => openEditAlbumModal(albumInfo));
         }
 
-        if (downloadAlbumBtn && !isAlbumOffline && !isAlbumDownloading) {
-            downloadAlbumBtn.addEventListener('click', () => downloadAlbum(albumInfo));
+        if (downloadAlbumBtn) {
+            downloadAlbumBtn.addEventListener('click', () => {
+                const isOfflineNow = albumInfo.tracks.every(t => downloadedTracksMap.has(t.url));
+                const isDownloadingNow = albumInfo.tracks.some(t => pendingDownloads.has(t.url));
+                
+                if (isOfflineNow) {
+                    removeAlbumOffline(albumInfo);
+                } else if (!isDownloadingNow) {
+                    downloadAlbum(albumInfo);
+                }
+            });
         }
         
         const heroArtistLink = albumHeroDiv.querySelector('.artist-link');
@@ -2237,6 +2333,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ── Track List Rendering ──────────────────────────────────────────────────
     function renderTrackList(tracks, container = trackListElement, isPlaylistView = false, playlistId = null) {
         container.innerHTML = '';
+        currentViewInfo = { tracks, container, isPlaylistView, playlistId };
         
         tracks.forEach((track, index) => {
             const trackItem = document.createElement('div');
@@ -2336,15 +2433,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (statusBtn) {
                 statusBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    if (track.isBoth) {
+                    
+                    // Rely on visual state to determine action - ensures UI and logic are 100% in sync
+                    const isVisualDownloaded = statusBtn.classList.contains('downloaded') || statusBtn.classList.contains('is-local') || statusBtn.classList.contains('is-both');
+                    const isVisualDownloading = statusBtn.classList.contains('downloading');
+
+                    if (statusBtn.classList.contains('is-both')) {
                         console.log('Track is already synced.');
-                    } else if (isDownloaded) {
+                    } else if (isVisualDownloaded) {
                         if (confirm('Remove this track from offline storage?')) {
                             removeOfflineTrack(track.url);
                         }
-                    } else if (track.isLocal) {
-                        initiateUpload(track);
-                    } else if (!isDownloading) {
+                    } else if (isVisualDownloading) {
+                        console.log('Download already in progress.');
+                    } else {
+                        // Not downloaded or downloading - start download
                         initiateDownload(track);
                     }
                 });
@@ -3435,16 +3538,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         ));
 
         if (result) {
-            if (!result.isDash) {
-                qqdlTargetUrl = result.api;
-                return result.url;
-            } else {
-                // If it's DASH, the user wants the "first result" even if it's DASH.
-                // But we should still mention it was DASH.
-                console.log(`First available resolution is DASH from ${result.api}`);
-                qqdlTargetUrl = result.api;
-                return { dashManifest: result.url };
-            }
+            qqdlTargetUrl = result.api;
+            return { url: result.url, isDash: result.isDash };
         }
 
         // Stage 2: Parallel Quality fallbacks if HI_RES failed on all APIs
@@ -3457,14 +3552,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const fallbackResult = await firstSuccess(fallbackPromises);
         if (fallbackResult) {
-            if (!fallbackResult.isDash) {
-                console.log(`Successfully found non-DASH stream using quality fallback from ${fallbackResult.api}`);
-                qqdlTargetUrl = fallbackResult.api;
-                return fallbackResult.url;
-            } else {
-                qqdlTargetUrl = fallbackResult.api;
-                return { dashManifest: fallbackResult.url };
-            }
+            qqdlTargetUrl = fallbackResult.api;
+            return { url: fallbackResult.url, isDash: fallbackResult.isDash };
         }
 
         return null;
@@ -3481,19 +3570,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         if (track.isCloud && track.url.startsWith('qqdl://')) {
             const resolved = await resolveCloudTrackUrl(track);
-            if (resolved) {
-                if (typeof resolved === 'object' && resolved.dashManifest) {
+            if (resolved && typeof resolved === 'object') {
+                if (resolved.isDash) {
                     isWaitingForDash = true;
                     dashActive = true;
-                    // We don't return here, we still want to update UI components below
-                    playDashStream(resolved.dashManifest);
+                    await playDashStream(resolved.url);
                 } else {
                     if (dashActive) {
                         await destroyDashPlayer();
                         dashActive = false;
                     }
-                    fullAudioUrl = resolved;
+                    fullAudioUrl = resolved.url || track.url;
                 }
+            } else if (resolved) {
+                fullAudioUrl = resolved; 
             } else {
                 alert("Failed to resolve cloud stream.");
                 return;
@@ -3509,10 +3599,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         const localPath = downloadedTracksMap.get(track.url);
 
         if (localPath) {
-            if (window.electronAPI) {
+            if (localPath.startsWith('offline:')) {
+                // DASH Offline Stream
+                isWaitingForDash = true;
+                dashActive = true;
+                await ensureDashPlayer();
+                shakaPlayerInstance.load(localPath).catch(e => {
+                    console.error("DASH Offline load failed", e);
+                    alert("Failed to load offline DASH track.");
+                });
+            } else if (window.electronAPI && !localPath.startsWith('pwa-stored')) {
                 fullAudioUrl = `simon-offline://${encodeURIComponent(localPath)}`;
             } else {
-                // Special URL that Service Worker will intercept for Range-Request support
+                // Special URL that Service Worker will intercept for Range-Request support (PWA standard)
                 fullAudioUrl = `./pwa-offline/${encodeURIComponent(track.url)}`;
             }
         }
@@ -3614,16 +3713,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         
         let targetUrl = track.url;
+        let isDashForDownload = false;
+        let dashManifestData = null;
+
         if (track.isCloud && track.url.startsWith('qqdl://')) {
             const resolved = await resolveCloudTrackUrl(track);
             if (!resolved) {
                 alert("Failed to resolve cloud stream for download.");
                 return;
             }
-            targetUrl = typeof resolved === 'object' ? null : resolved;
-            if (!targetUrl) {
-                alert("DASH streams cannot be downloaded for offline use yet.");
-                return;
+            if (typeof resolved === 'object') {
+                if (resolved.isDash) {
+                    isDashForDownload = true;
+                    dashManifestData = resolved.url;
+                } else {
+                    targetUrl = resolved.url || track.url;
+                }
+            } else {
+                targetUrl = resolved; 
             }
         }
 
@@ -3631,7 +3738,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         refreshCurrentView();
 
         try {
-            if (window.electronAPI) {
+            if (isDashForDownload) {
+                if (!dashManifestData) {
+                    throw new Error("Resolved DASH manifest is empty.");
+                }
+                await downloadDashTrack(track, dashManifestData);
+            } else if (window.electronAPI) {
+                if (!targetUrl) {
+                    throw new Error("Download URL is undefined.");
+                }
                 const result = await window.electronAPI.downloadTrack({
                     url: targetUrl,
                     originalTrackingUrl: track.url, 
@@ -3648,7 +3763,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } catch (e) {
             console.error('Download failed', e);
-            alert("Failed to download track.");
+            const errorMsg = e.message || e.toString();
+            alert(`Failed to download track: ${errorMsg}`);
         } finally {
             pendingDownloads.delete(track.url);
             refreshCurrentView();
@@ -3660,17 +3776,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function removeOfflineTrack(trackUrl) {
-        if (window.electronAPI) {
-            const success = await window.electronAPI.deleteOfflineTrack(trackUrl);
-            if (success) {
-                downloadedTracksMap.delete(trackUrl);
-                refreshCurrentView();
-            }
-        } else {
-            await deleteTrackFromDB(trackUrl);
-            downloadedTracksMap.delete(trackUrl);
-            refreshCurrentView();
+        const localPath = downloadedTracksMap.get(trackUrl);
+        
+        // 1. Cleanup Shaka Storage if it's a DASH track
+        if (localPath && localPath.startsWith('offline:')) {
+            try {
+                await ensureDashPlayer();
+                await shakaStorageInstance.remove(localPath);
+            } catch (e) { console.warn("Failed to remove DASH from shaka storage", e); }
         }
+
+        // 2. Cleanup Database
+        await deleteTrackFromDB(trackUrl);
+
+        // 3. Cleanup Electron File System if needed
+        if (window.electronAPI) {
+            await window.electronAPI.deleteOfflineTrack(trackUrl);
+        }
+
+        downloadedTracksMap.delete(trackUrl);
+        refreshCurrentView();
     }
 
     function refreshCurrentView() {
@@ -3679,11 +3804,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!activeView) return;
 
         if (activeView.id === 'album-view') {
-            const albumName = albumHeroDiv.querySelector('.album-hero-title')?.textContent;
-            if (albumName && albumsData[albumName]) {
-                const album = albumsData[albumName];
-                renderTrackList(album.tracks);
-                updateAlbumHeroOfflineStatus(album);
+            if (activeViewAlbum) {
+                renderTrackList(activeViewAlbum.tracks);
+                updateAlbumHeroOfflineStatus(activeViewAlbum);
             }
         } else if (activeView.id === 'artist-view') {
             // Difficult to refresh artist view perfectly without data stored globally
@@ -3767,18 +3890,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Initialize offline list on start
     async function syncOfflineState() {
+        downloadedTracksMap.clear();
+
+        // 1. Load from Electron if available
         if (window.electronAPI) {
             const meta = await window.electronAPI.getDownloadedList();
-            downloadedTracksMap.clear();
             for (const [fullUrl, info] of Object.entries(meta)) {
-                const trackPath = fullUrl.replace(serverBaseUrl, '');
-                downloadedTracksMap.set(trackPath, info.localPath);
+                downloadedTracksMap.set(fullUrl, info.localPath);
             }
-        } else {
-            const keys = await getAllOfflineTrackIds();
-            downloadedTracksMap.clear();
-            keys.forEach(k => downloadedTracksMap.set(k, 'pwa-stored'));
         }
+
+        // 2. Load from IndexedDB (DASH for both, Standard for PWA)
+        try {
+            const records = await getAllOfflineTrackRecords();
+            records.forEach(record => {
+                if (record.isDash) {
+                    downloadedTracksMap.set(record.id, record.offlineUri);
+                } else if (!window.electronAPI) {
+                    downloadedTracksMap.set(record.id, 'pwa-stored');
+                }
+            });
+        } catch (e) { console.warn("IDB sync failed", e); }
+
         refreshCurrentView();
     }
 
@@ -3808,8 +3941,35 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    async function removeAlbumOffline(album) {
+        if (!confirm(`Are you sure you want to remove all ${album.tracks.length} tracks of "${album.name}" from offline storage?`)) return;
+        
+        for (const track of album.tracks) {
+            if (downloadedTracksMap.has(track.url)) {
+                await removeOfflineTrack(track.url);
+            }
+        }
+        await syncOfflineState();
+    }
+
+    function updateAlbumHeroOfflineStatus(album) {
+        if (!albumHeroDiv) return;
+        const btn = albumHeroDiv.querySelector('.download-album-btn');
+        if (!btn) return;
+
+        const isAlbumOffline = album.tracks.every(t => downloadedTracksMap.has(t.url));
+        const isAlbumDownloading = album.tracks.some(t => pendingDownloads.has(t.url));
+
+        btn.classList.toggle('active', isAlbumOffline);
+        btn.innerHTML = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                ${isAlbumOffline ? '<polyline points="20 6 9 17 4 12"></polyline>' : '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line>'}
+            </svg>
+            <span>${isAlbumOffline ? 'Downloaded' : (isAlbumDownloading ? 'Downloading...' : 'Download Album')}</span>
+        `;
+    }
+
     async function downloadAlbum(album) {
-        if (!window.electronAPI) return;
         if (!album || !album.tracks) return;
 
         // Download all tracks sequentially
