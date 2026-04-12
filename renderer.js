@@ -1031,8 +1031,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const host = document.getElementById('tailscale-host-input').value.trim();
                 if (!host) { document.getElementById('tailscale-status').textContent = 'Please enter a device name.'; return; }
                 localStorage.setItem('tailscaleRemoteHost', host);
-                TailscaleRemoteEngine.connect(host);
-                renderSettingsPanel();
+                
+                // Show connecting state immediately without aggressively re-rendering the whole panel
+                const statusEl = document.getElementById('tailscale-status');
+                if (statusEl) statusEl.innerHTML = `Connecting to <strong>${host}</strong>...`;
+                
+                tailscaleConnectBtn.disabled = true;
+                tailscaleConnectBtn.style.opacity = '0.5';
+                tailscaleConnectBtn.textContent = 'Connecting...';
+                
+                TailscaleRemoteEngine.connect(host, (result) => {
+                    if (result.success) {
+                        // Re-render so the Disconnect button correctly replaces the Connect button
+                        renderSettingsPanel();
+                    } else {
+                        // Re-enable Connect button after failure so they can try again
+                        const btn = document.getElementById('tailscale-connect-btn');
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.style.opacity = '1';
+                            btn.textContent = 'Connect';
+                        }
+                    }
+                });
             });
         }
         if (tailscaleDisconnectBtn) {
@@ -4409,7 +4430,7 @@ const TailscaleRemoteEngine = (() => {
         else console.log('[Tailscale]', html);
     }
 
-    function connect(host) {
+    function connect(host, onFinish) {
         disconnect();
         remoteHost = host;
         const url = `ws://${host}:41000`;
@@ -4423,6 +4444,7 @@ const TailscaleRemoteEngine = (() => {
                 setStatus(`<span style="color:#4ade80">✓ Connected to <strong>${host}</strong></span>`);
                 stateInterval = setInterval(broadcastState, 2000);
                 console.log(`[Tailscale] Connected to ${host}`);
+                if (onFinish) onFinish({ success: true });
             };
 
             ws.onmessage = (event) => {
@@ -4434,6 +4456,7 @@ const TailscaleRemoteEngine = (() => {
 
             ws.onerror = () => {
                 setStatus(`<span style="color:#f87171">✗ Could not reach <strong>${host}</strong>. Is the Desktop app open and on Tailscale?</span>`);
+                if (onFinish) onFinish({ success: false });
             };
 
             ws.onclose = () => {
@@ -4441,10 +4464,12 @@ const TailscaleRemoteEngine = (() => {
                 clearInterval(stateInterval);
                 updateDeviceBtn();
                 setStatus(`Connection to <strong>${host}</strong> closed.`);
+                if (onFinish) onFinish({ success: false });
             };
 
         } catch(e) {
             setStatus(`Error: ${e.message}`);
+            if (onFinish) onFinish({ success: false });
         }
     }
 
