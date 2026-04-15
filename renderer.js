@@ -113,8 +113,6 @@ function initJamListener() {
             if (typeof playTrack === 'function') playTrack(jam.track, jam.track.metadata?.title, jam.track.metadata?.artist);
         }
     });
-
-    });
 }
 
 // ── Universal Sync Engine ────────────────────────────────────────────────────
@@ -142,18 +140,15 @@ function initActiveContextListener() {
         if (context.track && (!window.globalPlayingTrack || window.globalPlayingTrack.url !== context.track.url)) {
             console.log('[Sync] New track received from context:', context.track.metadata?.title);
             
-            // If we are slave, we DON'T load audio, we just update UI
             if (deviceId !== masterDeviceId) {
-                window.globalPlayingTrack = context.track;
-                // Force UI update without playing
-                if (typeof updateUI === 'function') updateUI(context.track); 
-                if (audioPlayer) {
-                    audioPlayer.src = ''; // Slave doesn't load audio
-                }
-            } else {
-                // If we are master, we play it
+                // If we are slave, we just update UI (no audio load)
                 if (typeof playTrack === 'function') {
                     playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, true);
+                }
+            } else {
+                // If we are master, we play it fully
+                if (typeof playTrack === 'function') {
+                    playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, false);
                 }
             }
         }
@@ -4189,7 +4184,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return null;
     }
 
-    async function playTrack(track, title, artist, prefetchOverride = null) {
+    async function playTrack(track, title, artist, prefetchOverride = null, skipAudio = false) {
         if (window.electronAPI) {
             window.electronAPI.updatePresence({ title, artist, startTime: Date.now(), isPaused: false });
         }
@@ -4209,66 +4204,70 @@ document.addEventListener('DOMContentLoaded', async () => {
         let fullAudioUrl = track.url;
         let isWaitingForDash = false;
         
-        if (prefetchOverride && prefetchOverride.status === 'ready' && prefetchOverride.track.url === track.url) {
-            fullAudioUrl = prefetchOverride.url;
-            isWaitingForDash = prefetchOverride.isDash;
-            if (isWaitingForDash) {
-                dashActive = true;
-                if (!prefetchOverride.skipAudioInjection) {
-                    if (fullAudioUrl.startsWith('offline:')) {
-                        await ensureDashPlayer();
-                        shakaPlayerInstance.load(fullAudioUrl).catch(e => console.error("DASH Offline load failed", e));
-                    } else {
-                        await playDashStream(fullAudioUrl);
-                    }
-                }
-            } else if (dashActive) {
-                await destroyDashPlayer();
-                dashActive = false;
-            }
+        // DASHBOARD MODE: Update UI only, do not load or play audio
+        if (skipAudio) {
+            console.log('[Sync] Slave Mode: Updating metadata UI only for:', title);
         } else {
-            if (track.isCloud && track.url.startsWith('qqdl://')) {
-                const resolved = await resolveCloudTrackUrl(track);
-                if (resolved && typeof resolved === 'object') {
-                    if (resolved.isDash) {
-                        isWaitingForDash = true;
-                        dashActive = true;
-                        await playDashStream(resolved.url);
-                    } else {
-                        if (dashActive) {
-                            await destroyDashPlayer();
-                            dashActive = false;
+            if (prefetchOverride && prefetchOverride.status === 'ready' && prefetchOverride.track.url === track.url) {
+                fullAudioUrl = prefetchOverride.url;
+                isWaitingForDash = prefetchOverride.isDash;
+                if (isWaitingForDash) {
+                    dashActive = true;
+                    if (!prefetchOverride.skipAudioInjection) {
+                        if (fullAudioUrl.startsWith('offline:')) {
+                            await ensureDashPlayer();
+                            shakaPlayerInstance.load(fullAudioUrl).catch(e => console.error("DASH Offline load failed", e));
+                        } else {
+                            await playDashStream(fullAudioUrl);
                         }
-                        fullAudioUrl = resolved.url || track.url;
                     }
-                } else if (resolved) {
-                    fullAudioUrl = resolved; 
-                } else {
-                    alert("Failed to resolve cloud stream.");
-                    return;
-                }
-            } else {
-                if (dashActive) {
+                } else if (dashActive) {
                     await destroyDashPlayer();
                     dashActive = false;
                 }
-            }
-
-            const localPathRaw = downloadedTracksMap.get(track.url);
-
-            if (localPathRaw) {
-                if (localPathRaw.startsWith('offline:')) {
-                    isWaitingForDash = true;
-                    dashActive = true;
-                    await ensureDashPlayer();
-                    shakaPlayerInstance.load(localPathRaw).catch(e => {
-                        console.error("DASH Offline load failed", e);
-                        alert("Failed to load offline DASH track.");
-                    });
-                } else if (window.electronAPI && !localPathRaw.startsWith('pwa-stored')) {
-                    fullAudioUrl = `simon-offline://${encodeURIComponent(localPathRaw)}`;
+            } else {
+                if (track.isCloud && track.url.startsWith('qqdl://')) {
+                    const resolved = await resolveCloudTrackUrl(track);
+                    if (resolved && typeof resolved === 'object') {
+                        if (resolved.isDash) {
+                            isWaitingForDash = true;
+                            dashActive = true;
+                            await playDashStream(resolved.url);
+                        } else {
+                            if (dashActive) {
+                                await destroyDashPlayer();
+                                dashActive = false;
+                            }
+                            fullAudioUrl = resolved.url || track.url;
+                        }
+                    } else if (resolved) {
+                        fullAudioUrl = resolved; 
+                    } else {
+                        alert("Failed to resolve cloud stream.");
+                        return;
+                    }
                 } else {
-                    fullAudioUrl = `./pwa-offline/${encodeURIComponent(track.url)}`;
+                    if (dashActive) {
+                        await destroyDashPlayer();
+                        dashActive = false;
+                    }
+                }
+
+                const localPathRaw = downloadedTracksMap.get(track.url);
+                if (localPathRaw) {
+                    if (localPathRaw.startsWith('offline:')) {
+                        isWaitingForDash = true;
+                        dashActive = true;
+                        await ensureDashPlayer();
+                        shakaPlayerInstance.load(localPathRaw).catch(e => {
+                            console.error("DASH Offline load failed", e);
+                            alert("Failed to load offline DASH track.");
+                        });
+                    } else if (window.electronAPI && !localPathRaw.startsWith('pwa-stored')) {
+                        fullAudioUrl = `simon-offline://${encodeURIComponent(localPathRaw)}`;
+                    } else {
+                        fullAudioUrl = `./pwa-offline/${encodeURIComponent(track.url)}`;
+                    }
                 }
             }
         }
