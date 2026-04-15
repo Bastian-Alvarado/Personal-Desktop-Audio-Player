@@ -161,21 +161,55 @@ function initActiveContextListener() {
             }
         }
 
-        // 3. Sync Play/Pause & Time (Only for Master)
-        if (deviceId === masterDeviceId && audioPlayer) {
-            if (context.isPaused !== undefined && context.isPaused !== audioPlayer.paused) {
-                context.isPaused ? audioPlayer.pause() : audioPlayer.play();
-            }
-            
-            // Time sync (Master follows the context if it's lagging or ahead significantly)
-            if (context.timestamp !== undefined) {
-                const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
-                const expectedTime = context.timestamp + elapsedSinceUpdate;
-                if (Math.abs(audioPlayer.currentTime - expectedTime) > 2) {
-                    audioPlayer.currentTime = expectedTime;
+        // 3. Sync Play/Pause & Time (UI for all, Audio for Master)
+        if (audioPlayer) {
+            // Mirror Play/Pause Icon across all devices
+            if (context.isPaused !== undefined) {
+                const playIconSync = document.querySelector('#play-pause-btn svg path');
+                if (playIconSync) {
+                    if (context.isPaused) {
+                        playIconSync.setAttribute('d', 'M8 5v14l11-7z'); // Play icon
+                    } else {
+                        playIconSync.setAttribute('d', 'M6 19h4V5H6v14zm8-14v14h4V5h-4z'); // Pause icon
+                    }
+                }
+                
+                // Only the MASTER actually controls audio output
+                if (deviceId === masterDeviceId) {
+                    if (context.isPaused !== audioPlayer.paused) {
+                        context.isPaused ? audioPlayer.pause() : audioPlayer.play();
+                    }
                 }
             }
-        } else if (audioPlayer && audioPlayer.src) {
+            
+            // Sync Time / Progress Bar
+            if (context.timestamp !== undefined) {
+                const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
+                const expectedTime = Math.max(0, context.timestamp + (context.isPaused ? 0 : elapsedSinceUpdate));
+                
+                if (deviceId === masterDeviceId) {
+                    // Master syncs actual audio element
+                    if (Math.abs(audioPlayer.currentTime - expectedTime) > 1.5) {
+                        audioPlayer.currentTime = expectedTime;
+                    }
+                } else {
+                    // Slaves only sync the UI/Lyrics
+                    const duration = context.track?.metadata?.duration || 0;
+                    if (duration > 0) {
+                        const percent = (expectedTime / duration) * 100;
+                        const progressBarInner = document.querySelector('#progress-bar .progress-inner');
+                        const currentTimeEl = document.getElementById('current-time');
+                        if (progressBarInner) progressBarInner.style.width = `${percent}%`;
+                        if (currentTimeEl) currentTimeEl.textContent = formatTime(expectedTime);
+                    }
+                    
+                    // Sync Lyrics for slaves
+                    if (typeof syncLyrics === 'function') syncLyrics(expectedTime);
+                }
+            }
+        }
+
+        if (deviceId !== masterDeviceId && audioPlayer && audioPlayer.src) {
              // If we were master but no longer are, stop audio
              audioPlayer.src = '';
              audioPlayer.load();
@@ -1337,13 +1371,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             listContainer.appendChild(card);
         });
 
-        // Add take-control listener
-        const takeBtn = listContainer.querySelector('.take-control-btn');
-        if (takeBtn) {
-            takeBtn.addEventListener('click', () => {
+        // Add take-control listeners (for all "Play on this device" buttons)
+        listContainer.querySelectorAll('.take-control-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const b = e.currentTarget;
+                b.textContent = 'Linking...';
+                b.disabled = true;
                 takeMasterControl();
             });
-        }
+        });
 
         // Add Jam listeners (Multi-Speaker Mode)
         listContainer.querySelectorAll('.jam-device-btn').forEach(btn => {
@@ -1472,6 +1508,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     playPauseBtn.addEventListener('click', () => {
+        // UNIVERSAL SYNC: Slave remote control
+        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+            const isPaused = !audioPlayer.paused;
+            window._fbDB.ref(`users/${currentUser.uid}/activeContext`).update({
+                isPaused: isPaused,
+                lastUpdate: firebase.database.ServerValue.TIMESTAMP
+            });
+            return;
+        }
+
         const targetId = FirebaseRemoteEngine.getControllingDevice();
         if (targetId) {
             FirebaseRemoteEngine.sendCommand(targetId, 'PLAY_PAUSE');
@@ -1497,6 +1543,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             const artist = (globalPlayingTrack.metadata && globalPlayingTrack.metadata.artist) ? globalPlayingTrack.metadata.artist : 'Unknown Artist';
             window.electronAPI.updatePresence({ title, artist, startTime: Date.now(), isPaused: false });
         }
+
+        // UNIVERSAL SYNC: Master broadcasts immediately
+        if (typeof deviceId !== 'undefined' && deviceId === masterDeviceId) {
+            if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
+        }
     });
 
     audioPlayer.addEventListener('pause', () => {
@@ -1511,6 +1562,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             const artist = (globalPlayingTrack.metadata && globalPlayingTrack.metadata.artist) ? globalPlayingTrack.metadata.artist : 'Unknown Artist';
             window.electronAPI.updatePresence({ title, artist, isPaused: true });
         }
+
+        // UNIVERSAL SYNC: Master broadcasts immediately
+        if (typeof deviceId !== 'undefined' && deviceId === masterDeviceId) {
+            if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
+        }
+    });
+
+    audioPlayer.addEventListener('seeked', () => {
+        // UNIVERSAL SYNC: Master broadcasts immediately
+        if (typeof deviceId !== 'undefined' && deviceId === masterDeviceId) {
+            if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
+        }
+    });
+
+    audioPlayer.addEventListener('volumechange', () => {
+        // Volume is independent per user choice
     });
 
     function isTrackUnsupported(track) {
@@ -1707,6 +1774,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     nextBtn.addEventListener('click', () => {
+        // UNIVERSAL SYNC: Slave remote control
+        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'NEXT');
+            return;
+        }
         const targetId = FirebaseRemoteEngine.getControllingDevice();
         if (targetId) {
             FirebaseRemoteEngine.sendCommand(targetId, 'NEXT');
@@ -1716,6 +1788,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     prevBtn.addEventListener('click', () => {
+        // UNIVERSAL SYNC: Slave remote control
+        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PREV');
+            return;
+        }
         const targetId = FirebaseRemoteEngine.getControllingDevice();
         if (targetId) {
             FirebaseRemoteEngine.sendCommand(targetId, 'PREV');
@@ -1862,16 +1939,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     progressBarContainer.addEventListener('mousedown', (e) => {
+        const uid = currentUser?.uid;
+        const rect = progressBarContainer.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const percent = Math.max(0, Math.min(1, clickX / rect.width));
+
+        // UNIVERSAL SYNC: If we are slave, we broadcast a seek to the account
+        if (deviceId !== masterDeviceId && uid) {
+            // We use the last known duration from the context or the local track
+            const duration = audioPlayer.duration || (window.globalPlayingTrack?.metadata?.duration);
+            if (duration) {
+                window._fbDB.ref(`users/${uid}/activeContext`).update({
+                    timestamp: percent * duration,
+                    lastUpdate: firebase.database.ServerValue.TIMESTAMP
+                });
+            }
+            return;
+        }
+
+        // LEGACY / DIRECT REMOTE CONTROL
         const targetId = FirebaseRemoteEngine.getControllingDevice();
         if (targetId) {
-            const rect = progressBarContainer.getBoundingClientRect();
-            const clickX = e.clientX - rect.left;
-            const percent = Math.max(0, Math.min(1, clickX / rect.width));
             if (audioPlayer.duration) {
                 FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
             }
             return;
         }
+
         if (!audioPlayer.src) return;
         if (isSeekingDisabled()) return;
         isDraggingScrubber = true;
