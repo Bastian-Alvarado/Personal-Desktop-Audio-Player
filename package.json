@@ -4,7 +4,8 @@
   "description": "",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dev": "npx -y concurrently \"npx -y http-server . -p 3000\" \"npx -y wait-on http://localhost:3000 && electron .\""
   },
   "keywords": [],
   "author": "",

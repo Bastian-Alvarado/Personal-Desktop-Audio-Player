@@ -18,14 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteOfflineTrack: (url) => ipcRenderer.invoke('delete-offline-track', url),
     onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (event, data) => callback(data)),
 
-    // Native Dialogs
-    selectDirectory: () => ipcRenderer.invoke('select-directory'),
 
-    // Cloud Upload
-    uploadTrack: (data) => ipcRenderer.invoke('upload-track-to-server', data),
 
-    // Tailscale Remote WebSockets
-    remoteBroadcastState: (data) => ipcRenderer.send('remote-broadcast-state', data),
-    onRemoteCommand: (callback) => ipcRenderer.on('remote-incoming-command', (event, data) => callback(data)),
-    onRemoteClientCountChanged: (callback) => ipcRenderer.on('remote-client-count-changed', (event, data) => callback(data))
+
 });

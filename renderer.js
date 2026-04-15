@@ -1,6 +1,173 @@
 let qqdlTargetUrl = 'https://wolf.qqdl.site';
 let availableCloudApis = [];
 let isQqdlInitialized = false;
+let appInitialized = false; // Separate guard for the main app init
+
+// Firebase Globals
+let currentUser = null;
+let deviceId = null;
+let allPlaylists = [];
+let isJamHost = false;
+let activeJamHostId = null;
+let jamSyncInterval = null;
+
+// ── Firebase Modules (Global Scope for Hoisting) ──────────────────────────────
+
+function initOfflineIndicator() {
+    if (!window._fbDB) return;
+    window._fbDB.ref('.info/connected').on('value', snap => {
+        const online = snap.val() === true;
+        document.body.classList.toggle('firebase-offline', !online);
+        const bar = document.getElementById('offline-bar');
+        if (bar) {
+            if (online) bar.classList.add('hidden');
+            else bar.classList.remove('hidden');
+        }
+    });
+}
+
+async function initDevicePresence() {
+    if (!currentUser) return;
+    const uid = currentUser.uid;
+    const deviceRef = window._fbDB.ref(`users/${uid}/devices/${deviceId}`);
+    
+    let deviceName = getDefaultDeviceName();
+    try {
+        const doc = await window._fbFS.collection('users').doc(uid).get();
+        if (doc.exists && doc.data().devices && doc.data().devices[deviceId]) {
+            deviceName = doc.data().devices[deviceId].name || deviceName;
+        }
+    } catch(e) { console.warn('Could not fetch custom device name', e); }
+
+    await deviceRef.set({
+        name: deviceName,
+        type: window.electronAPI ? 'electron' : 'pwa',
+        online: true,
+        lastSeen: firebase.database.ServerValue.TIMESTAMP,
+        state: { lastUpdate: firebase.database.ServerValue.TIMESTAMP }
+    });
+
+    deviceRef.onDisconnect().update({ online: false, lastSeen: firebase.database.ServerValue.TIMESTAMP });
+
+    setInterval(() => {
+        const audioPlayer = document.getElementById('audio-player');
+        if (!audioPlayer || audioPlayer.paused || !window.globalPlayingTrack) return;
+        deviceRef.child('state').update({
+            trackUrl: window.globalPlayingTrack.url,
+            trackMeta: window.globalPlayingTrack.metadata || { title: window.globalPlayingTrack.filename },
+            currentTime: audioPlayer.currentTime,
+            duration: audioPlayer.duration,
+            paused: false,
+            volume: audioPlayer.volume,
+            lastUpdate: firebase.database.ServerValue.TIMESTAMP
+        });
+    }, 3000);
+}
+
+function startJamHostSession() {
+    isJamHost = true;
+    activeJamHostId = deviceId;
+    if (window.globalPlayingTrack) broadcastJamState(window.globalPlayingTrack);
+}
+
+async function broadcastJamState(track) {
+    if (!isJamHost || !currentUser) return;
+    const uid = currentUser.uid;
+    await window._fbDB.ref(`users/${uid}/jam`).set({
+        active: true,
+        hostDeviceId: deviceId,
+        track,
+        startAt: firebase.database.ServerValue.TIMESTAMP,
+        sync: null
+    });
+    startJamSyncInterval(uid);
+}
+
+function startJamSyncInterval(uid) {
+    if (jamSyncInterval) clearInterval(jamSyncInterval);
+    jamSyncInterval = setInterval(() => {
+        const audioPlayer = document.getElementById('audio-player');
+        if (!audioPlayer || audioPlayer.paused) return;
+        window._fbDB.ref(`users/${uid}/jam/sync`).set({
+            currentTime: audioPlayer.currentTime,
+            epoch: firebase.database.ServerValue.TIMESTAMP
+        });
+    }, 3000);
+}
+
+function initJamListener() {
+    if (!currentUser) return;
+    const uid = currentUser.uid;
+    window._fbDB.ref(`users/${uid}/jam`).on('value', async snap => {
+        const jam = snap.val();
+        if (!jam || !jam.active) { activeJamHostId = null; return; }
+        if (jam.hostDeviceId === deviceId) { isJamHost = true; return; }
+        activeJamHostId = jam.hostDeviceId;
+        isJamHost = false;
+        if (jam.track && (!window.globalPlayingTrack || window.globalPlayingTrack.url !== jam.track.url)) {
+            if (typeof playTrack === 'function') playTrack(jam.track, jam.track.metadata?.title, jam.track.metadata?.artist);
+        }
+    });
+
+    window._fbDB.ref(`users/${uid}/jam/sync`).on('value', snap => {
+        const s = snap.val();
+        if (!s || isJamHost) return;
+        const audioPlayer = document.getElementById('audio-player');
+        if (!audioPlayer) return;
+        const elapsedSinceEpoch = (Date.now() - s.epoch) / 1000;
+        const expectedTime = s.currentTime + elapsedSinceEpoch;
+        if (Math.abs(audioPlayer.currentTime - expectedTime) > 0.6) {
+            audioPlayer.currentTime = expectedTime;
+        }
+    });
+}
+
+// Defining as a class/object to survive hoisting vs const assignment
+const FirebaseRemoteEngine = {
+    controllingDeviceId: null,
+    listenerRef: null,
+
+    sendCommand(targetDeviceId, type, payload = {}) {
+        const uid = currentUser?.uid;
+        if (!uid || !targetDeviceId) return;
+        window._fbDB.ref(`users/${uid}/commands/${targetDeviceId}`).push({
+            id: crypto.randomUUID(),
+            type, payload,
+            from: deviceId,
+            timestamp: firebase.database.ServerValue.TIMESTAMP
+        });
+    },
+
+    initCommandListener() {
+        if (!currentUser) return;
+        const uid = currentUser.uid;
+        if (this.listenerRef) this.listenerRef.off();
+        this.listenerRef = window._fbDB.ref(`users/${uid}/commands/${deviceId}`);
+        this.listenerRef.on('child_added', snap => {
+            const data = snap.val();
+            if (data) this.handleRemoteCommand(data);
+            snap.ref.remove();
+        });
+    },
+
+    handleRemoteCommand(data) {
+        const audioEl = document.getElementById('audio-player');
+        switch (data.type) {
+            case 'PLAY_PAUSE': if (audioEl) audioEl.paused ? audioEl.play() : audioEl.pause(); break;
+            case 'SEEK': if (audioEl) audioEl.currentTime = data.payload.currentTime; break;
+            case 'NEXT': if (typeof playNextTrack === 'function') playNextTrack(false); break;
+            case 'PREV': if (typeof playPreviousTrack === 'function') playPreviousTrack(); break;
+            case 'SET_VOLUME': if (audioEl && data.payload.volume !== undefined) audioEl.volume = data.payload.volume; break;
+            case 'PLAY_TRACK': 
+                const t = data.payload.track;
+                if (t && typeof playTrack === 'function') playTrack(t, t.metadata?.title, t.metadata?.artist);
+                break;
+        }
+    },
+
+    setControllingDevice(id) { this.controllingDeviceId = id; },
+    getControllingDevice() { return this.controllingDeviceId; }
+};
 
 // Helper for racing multiple API requests
 const firstSuccess = (promises) => {
@@ -67,10 +234,104 @@ function getTidalImage(hash, size = '320x320') {
 }
 
 // Global Configuration
-const DEFAULT_SERVER_URL = 'http://localhost:3000';
-const serverBaseUrl = localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL;
+
+function showAuthOverlay() {
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) overlay.classList.remove('hidden');
+}
+
+function hideAuthOverlay() {
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) overlay.classList.add('hidden');
+}
+
+function getDefaultDeviceName() {
+    if (window.electronAPI) return 'Desktop App';
+    const ua = navigator.userAgent;
+    if (/iPhone/.test(ua)) return 'iPhone';
+    if (/iPad/.test(ua)) return 'iPad';
+    if (/Android/.test(ua)) return 'Android Device';
+    if (/Mac/.test(ua)) return 'Mac';
+    if (/Win/.test(ua)) return 'Windows PC';
+    return 'Web Browser';
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
+    // Initial Auth and Firebase Setup
+    const googleBtn = document.getElementById('google-signin-btn');
+    if (googleBtn) {
+        googleBtn.addEventListener('click', async () => {
+            try {
+                console.log('[Auth] Button clicked. _fbAuth:', window._fbAuth);
+                if (!window._fbAuth) { alert('Firebase Auth not initialized. Check console.'); return; }
+                const provider = new firebase.auth.GoogleAuthProvider();
+                console.log('[Auth] Calling signInWithPopup...');
+                const result = await window._fbAuth.signInWithPopup(provider);
+                console.log('[Auth] Sign-in success:', result.user.email);
+            } catch(err) {
+                console.error('[Auth] Error:', err);
+                alert('Sign in failed: ' + (err.message || err.code || JSON.stringify(err)));
+            }
+        });
+    }
+
+    const cancelBtn = document.getElementById('auth-cancel-btn');
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', () => {
+            hideAuthOverlay();
+        });
+    }
+
+    // ── Pre-auth initialization ──────────────────────────────────────────────
+    // We resolve device-id regardless of auth state for local presence
+    deviceId = localStorage.getItem('deviceId');
+    if (!deviceId) {
+        deviceId = crypto.randomUUID();
+        localStorage.setItem('deviceId', deviceId);
+    }
+
+    // Initialize the main app logic immediately (Guest Mode)
+    appInit();
+
+    window._fbAuth.onAuthStateChanged(async (user) => {
+        currentUser = user;
+        
+        if (user) {
+            console.log('[Auth] User signed in:', user.email);
+            hideAuthOverlay();
+            // Start cloud services dynamically
+            initializeCloudServices(user);
+        } else {
+            console.log('[Auth] No user session found. Operating in Guest mode.');
+            // Note: we no longer call showAuthOverlay() automatically here
+        }
+
+        // Re-render settings if open to update account state
+        if (settingsView && settingsView.classList.contains('active')) {
+            renderSettingsPanel();
+        }
+    });
+
+    async function initializeCloudServices(user) {
+        if (!user || !window._fbDB) return;
+
+        // 1. Clear legacy localStorage playlists (clean break)
+        localStorage.removeItem('personalPlaylists');
+
+        // 2. Initialize Firebase components
+        initOfflineIndicator();
+        initDevicePresence();
+        initJamListener();
+        FirebaseRemoteEngine.initCommandListener();
+
+        console.log('[Cloud] Firebase services initialized.');
+    }
+
+    // We wrap the original initialization code in appInit()
+    async function appInit() {
+        if (appInitialized) return; // Prevent double init
+        appInitialized = true;
+
     // Views
     const homeView = document.getElementById('home-view');
     const allAlbumsView = document.getElementById('all-albums-view');
@@ -156,6 +417,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Settings Elements
     const settingsBtn = document.getElementById('settings-btn');
+    const deviceBtn = document.getElementById('device-selector-btn');
     const settingsView = document.getElementById('settings-view');
     const settingsCloseBtn = document.getElementById('settings-close-btn');
 
@@ -166,27 +428,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mobileNavItems = [mobileHomeBtn, mobileSearchBtn, mobileSettingsBtn];
     const mobileSearchInput = document.getElementById('mobile-search-input');
     
-    // Metadata Edit Elements
-    const editMetadataModal = document.getElementById('edit-metadata-modal');
-    const metadataModalTitle = document.getElementById('metadata-modal-title');
-    const metadataTitleInput = document.getElementById('metadata-title-input');
-    const metadataArtistInput = document.getElementById('metadata-artist-input');
-    const metadataAlbumInput = document.getElementById('metadata-album-input');
-    const metadataYearInput = document.getElementById('metadata-year-input');
-    const metadataArtPreview = document.getElementById('metadata-art-preview');
-    const metadataArtInput = document.getElementById('metadata-art-input');
-    const metadataArtDropzone = document.getElementById('metadata-art-dropzone');
-    const metadataSaveBtn = document.getElementById('metadata-save-btn');
-    const metadataCancelBtn = document.getElementById('metadata-cancel-btn');
-    const metadataRestoreBtn = document.getElementById('metadata-restore-btn');
     const trackContextMenu = document.getElementById('track-context-menu');
-    const menuEditBtn = document.getElementById('menu-edit-btn');
     const menuPlaylistBtn = document.getElementById('menu-playlist-btn');
 
     let currentEditingTrack = null;
-    let currentEditingAlbum = null;
-    let isAlbumMode = false;
-    let newCoverArtBase64 = null;
 
     function updateMobileNavActive(activeBtn) {
         mobileNavItems.forEach(btn => {
@@ -337,7 +582,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
     let repeatMode = 0;
     let globalPlayingTrack = null;
-    let allPlaylists = [];
+
     let activePlaylistId = null;
     let pendingAddTrack = null;
     let createPlaylistCallback = null;
@@ -469,7 +714,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let userQueue = [];
     let downloadedTracksMap = new Map(); // url -> localPath
     let pendingDownloads = new Map(); // url -> progress
-    let pendingUploads = new Set();  // url
+
 
     // --- PWA Offline IndexedDB Helper ---
     const DB_NAME = 'SimonOffline';
@@ -756,6 +1001,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         settingsBtn.classList.remove('settings-btn-active');
     }
 
+    if (deviceBtn) {
+        deviceBtn.addEventListener('click', () => {
+            renderSettingsPanel();
+            openSettings();
+        });
+    }
+
     settingsBtn.addEventListener('click', () => {
         if (settingsView.classList.contains('active')) {
             history.back();
@@ -794,201 +1046,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    menuEditBtn.addEventListener('click', () => {
-        hideContextMenu();
-        if (currentEditingTrack) openEditMetadataModal(currentEditingTrack);
-    });
-
     menuPlaylistBtn.addEventListener('click', (e) => {
         hideContextMenu();
         if (currentEditingTrack) showAddToPlaylistDropdown(currentEditingTrack, e.target);
     });
 
-    function openEditAlbumModal(albumInfo) {
-        isAlbumMode = true;
-        currentEditingAlbum = albumInfo;
-        newCoverArtBase64 = null;
-        
-        metadataModalTitle.textContent = "Edit Album Information";
-        
-        // Hide song-specific fields
-        metadataTitleInput.closest('.input-group').style.display = 'none';
-        metadataYearInput.closest('.input-group').style.display = 'none';
-        
-        // Show cover editor for album level
-        metadataArtDropzone.closest('.metadata-editor-left').style.display = 'flex';
-        metadataRestoreBtn.style.display = 'none';
-        
-        metadataArtistInput.value = albumInfo.artist;
-        metadataAlbumInput.value = albumInfo.name;
 
-        // Show current album cover
-        if (albumInfo.coverTrackPath) {
-            metadataArtPreview.src = `${serverBaseUrl}/api/cover?path=${encodeURIComponent(albumInfo.coverTrackPath)}&t=${Date.now()}`;
-            metadataArtPreview.style.display = 'block';
-        } else {
-            metadataArtPreview.src = '';
-            metadataArtPreview.style.display = 'none';
-        }
-        
-        editMetadataModal.classList.remove('hidden');
-    }
-
-    function openEditMetadataModal(track) {
-        isAlbumMode = false;
-        currentEditingTrack = track;
-        newCoverArtBase64 = null;
-        
-        metadataModalTitle.textContent = "Edit Song Information";
-        
-        // Ensure all fields are visible
-        metadataTitleInput.closest('.input-group').style.display = 'flex';
-        metadataYearInput.closest('.input-group').style.display = 'flex';
-        
-        // Hide cover editor for individual songs
-        metadataArtDropzone.closest('.metadata-editor-left').style.display = 'none';
-        metadataRestoreBtn.style.display = 'block';
-        
-        metadataTitleInput.value = (track.metadata && track.metadata.title) ? track.metadata.title : track.filename;
-        metadataArtistInput.value = (track.metadata && track.metadata.artist) ? track.metadata.artist : '';
-        metadataAlbumInput.value = (track.metadata && track.metadata.album) ? track.metadata.album : '';
-        metadataYearInput.value = (track.metadata && track.metadata.year) ? track.metadata.year : '';
-        
-        if (track.hasBackup) {
-            metadataRestoreBtn.classList.remove('hidden');
-        } else {
-            metadataRestoreBtn.classList.add('hidden');
-        }
-
-        editMetadataModal.classList.remove('hidden');
-    }
-
-    metadataCancelBtn.addEventListener('click', () => {
-        editMetadataModal.classList.add('hidden');
-    });
-
-    metadataArtDropzone.addEventListener('click', () => {
-        metadataArtInput.click();
-    });
-
-    metadataArtInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            newCoverArtBase64 = event.target.result;
-            metadataArtPreview.src = newCoverArtBase64;
-            metadataArtPreview.style.display = 'block';
-        };
-        reader.readAsDataURL(file);
-    });
-
-    metadataSaveBtn.addEventListener('click', async () => {
-        if (isAlbumMode) {
-            if (!currentEditingAlbum) return;
-            metadataSaveBtn.disabled = true;
-            metadataSaveBtn.textContent = 'Saving...';
-            
-            try {
-                const res = await fetch(`${serverBaseUrl}/api/update-album-metadata`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        tracks: currentEditingAlbum.tracks.map(t => ({ relativePath: t.relativePath, isLocal: !!t.isLocal })),
-                        metadata: {
-                            artist: metadataArtistInput.value.trim(),
-                            album: metadataAlbumInput.value.trim()
-                        },
-                        coverArt: newCoverArtBase64
-                    })
-                });
-
-                if (res.ok) {
-                    editMetadataModal.classList.add('hidden');
-                    await initializeMusicLibrary();
-                    alert('Album updated successfully!');
-                } else {
-                    const err = await res.json();
-                    alert('Save failed: ' + err.error);
-                }
-            } catch (e) {
-                alert('Error saving album metadata: ' + e.message);
-            } finally {
-                metadataSaveBtn.disabled = false;
-                metadataSaveBtn.textContent = 'Save Changes';
-            }
-            return;
-        }
-
-        if (!currentEditingTrack) return;
-        
-        metadataSaveBtn.disabled = true;
-        metadataSaveBtn.textContent = 'Saving...';
-        
-            const payload = {
-                relativePath: currentEditingTrack.relativePath,
-                isLocal: !!currentEditingTrack.isLocal,
-                metadata: {
-                    title: metadataTitleInput.value.trim(),
-                    artist: metadataArtistInput.value.trim(),
-                    album: metadataAlbumInput.value.trim(),
-                    year: metadataYearInput.value
-                },
-                coverArt: null // coverArt editing disabled at song level
-            };
-
-        try {
-            const res = await fetch(`${serverBaseUrl}/api/update-metadata`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            if (res.ok) {
-                editMetadataModal.classList.add('hidden');
-                // Force full refresh to show new metadata/art
-                await initializeMusicLibrary();
-            } else {
-                const err = await res.json();
-                alert('Save failed: ' + err.error);
-            }
-        } catch (e) {
-            alert('Error saving metadata: ' + e.message);
-        } finally {
-            metadataSaveBtn.disabled = false;
-            metadataSaveBtn.textContent = 'Save Changes';
-        }
-    });
-
-    metadataRestoreBtn.addEventListener('click', async () => {
-        if (!currentEditingTrack || !confirm('Are you sure you want to restore the original file from backup? This will undo all edits.')) return;
-        
-        metadataRestoreBtn.disabled = true;
-        
-        try {
-            const res = await fetch(`${serverBaseUrl}/api/restore-backup`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    relativePath: currentEditingTrack.relativePath,
-                    isLocal: !!currentEditingTrack.isLocal
-                })
-            });
-
-            if (res.ok) {
-                editMetadataModal.classList.add('hidden');
-                await initializeMusicLibrary();
-            } else {
-                const err = await res.json();
-                alert('Restore failed: ' + err.error);
-            }
-        } catch (e) {
-            alert('Error restoring backup: ' + e.message);
-        } finally {
-            metadataRestoreBtn.disabled = false;
-        }
-    });
 
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && settingsView.classList.contains('active')) {
@@ -997,73 +1060,180 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // ── Settings Panel Renderer ───────────────────────────────────────────────
+    // ── Settings Panel Renderer ───────────────────────────────────────────────
     function renderSettingsPanel() {
         const body = settingsView.querySelector('.settings-body');
         if (!body) return;
 
         body.innerHTML = `
             <div class="settings-section">
-                <div class="settings-section-title">Remote Playback</div>
+                <div class="settings-section-title">Account</div>
                 <div class="settings-row">
-                    <div class="settings-row-info">
-                        <div class="settings-row-label">Tailscale Device Name</div>
-                        <div class="settings-row-sub">Enter the full MagicDNS address of your Desktop PC (e.g. <code style="font-family:monospace;opacity:0.8;">simon-pc.tailaeca61.ts.net</code>). The app will connect via WebSocket over your Tailscale network and use it as the playback device.</div>
-                    </div>
-                    <div class="settings-input-group">
-                        <input id="tailscale-host-input" class="settings-text-input" type="text" placeholder="device-name" value="${localStorage.getItem('tailscaleRemoteHost') || ''}" spellcheck="false" autocomplete="off">
-                        <button id="tailscale-connect-btn" class="settings-save-btn">Connect</button>
-                        ${localStorage.getItem('tailscaleRemoteHost') ? `<button id="tailscale-disconnect-btn" class="settings-reset-btn">Disconnect</button>` : ''}
-                    </div>
-                    <div id="tailscale-status" class="local-path-status" style="margin-top:8px;">
-                        ${typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling() 
-                            ? `<span style="color:#4ade80">✓ Connected to <strong>${localStorage.getItem('tailscaleRemoteHost')}</strong></span>` 
-                            : (localStorage.getItem('tailscaleRemoteHost') ? `Saved host: <strong>${localStorage.getItem('tailscaleRemoteHost')}</strong> — click Connect to activate.` : 'Not configured.')}
-                    </div>
+                    ${currentUser ? `
+                        <div class="settings-row-info">
+                            <div class="settings-row-label">Signed in as</div>
+                            <div class="settings-row-sub">${currentUser.email}</div>
+                        </div>
+                        <button id="sign-out-btn" class="settings-reset-btn">Sign Out</button>
+                    ` : `
+                        <div class="settings-row-info">
+                            <div class="settings-row-label">Not signed in</div>
+                            <div class="settings-row-sub">Sign in to sync devices and play together</div>
+                        </div>
+                        <button id="settings-signin-btn" class="modal-btn primary-btn" style="padding: 10px 16px; font-size: 13px;">Sign In</button>
+                    `}
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">My Devices</div>
+                <div id="settings-device-list" class="settings-device-list">
+                    <div class="loading-state">Loading devices...</div>
+                </div>
+            </div>
+            
+            <div id="remote-control-panel" class="settings-section hidden" style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 20px;">
+                <div class="settings-section-title">Remote Control</div>
+                <div id="remote-control-status" class="remote-control-status"></div>
+                <div class="remote-control-actions" style="display: flex; gap: 10px; margin-top: 15px;">
+                     <button id="remote-prev-btn" class="icon-button"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 19 2 12 11 5 11 19"></polygon><polygon points="22 19 13 12 22 5 22 19"></polygon></svg></button>
+                     <button id="remote-play-pause-btn" class="icon-button"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
+                     <button id="remote-next-btn" class="icon-button"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg></button>
+                </div>
+                <div style="margin-top: 15px; display: flex; align-items: center; gap: 10px;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                    <input id="remote-volume-slider" type="range" min="0" max="1" step="0.01" style="flex: 1;">
                 </div>
             </div>
         `;
 
-        // Tailscale Remote handlers
-        const tailscaleConnectBtn = document.getElementById('tailscale-connect-btn');
-        const tailscaleDisconnectBtn = document.getElementById('tailscale-disconnect-btn');
-        if (tailscaleConnectBtn) {
-            tailscaleConnectBtn.addEventListener('click', () => {
-                const host = document.getElementById('tailscale-host-input').value.trim();
-                if (!host) { document.getElementById('tailscale-status').textContent = 'Please enter a device name.'; return; }
-                localStorage.setItem('tailscaleRemoteHost', host);
-                
-                // Show connecting state immediately without aggressively re-rendering the whole panel
-                const statusEl = document.getElementById('tailscale-status');
-                if (statusEl) statusEl.innerHTML = `Connecting to <strong>${host}</strong>...`;
-                
-                tailscaleConnectBtn.disabled = true;
-                tailscaleConnectBtn.style.opacity = '0.5';
-                tailscaleConnectBtn.textContent = 'Connecting...';
-                
-                TailscaleRemoteEngine.connect(host, (result) => {
-                    if (result.success) {
-                        // Re-render so the Disconnect button correctly replaces the Connect button
-                        renderSettingsPanel();
-                    } else {
-                        // Re-enable Connect button after failure so they can try again
-                        const btn = document.getElementById('tailscale-connect-btn');
-                        if (btn) {
-                            btn.disabled = false;
-                            btn.style.opacity = '1';
-                            btn.textContent = 'Connect';
-                        }
-                    }
-                });
+        const signOutBtn = document.getElementById('sign-out-btn');
+        if (signOutBtn) {
+            signOutBtn.addEventListener('click', () => {
+                window._fbAuth.signOut();
             });
         }
-        if (tailscaleDisconnectBtn) {
-            tailscaleDisconnectBtn.addEventListener('click', () => {
-                localStorage.removeItem('tailscaleRemoteHost');
-                TailscaleRemoteEngine.disconnect();
-                renderSettingsPanel();
+
+        const signInBtn = document.getElementById('settings-signin-btn');
+        if (signInBtn) {
+            signInBtn.addEventListener('click', () => {
+                showAuthOverlay(); // Show the login modal we already have
             });
+        }
+
+        // Trigger immediate device list render if we have data
+        const uid = currentUser?.uid;
+        if (uid) {
+            window._fbDB.ref(`users/${uid}/devices`).once('value', snap => {
+                renderDeviceList(snap.val());
+            });
+        } else {
+            renderDeviceList(null); // Show guest placeholder
         }
     }
+
+    function renderDeviceList(devices) {
+        const listContainer = document.getElementById('settings-device-list');
+        if (!listContainer) return;
+        
+        if (!currentUser) {
+            listContainer.innerHTML = `
+                <div style="text-align: center; padding: 20px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px dashed rgba(255,255,255,0.1);">
+                    <div style="font-size: 12px; color: #a0a0a0; margin-bottom: 12px;">Sign in to sync your playback across devices</div>
+                    <button id="device-list-signin-btn" class="modal-btn secondary-btn" style="padding: 6px 12px; font-size: 11px;">Sign In</button>
+                </div>
+            `;
+            const btn = document.getElementById('device-list-signin-btn');
+            if (btn) btn.addEventListener('click', () => showAuthOverlay());
+            return;
+        }
+
+        if (!devices) {
+            listContainer.innerHTML = '<div class="empty-state">No other devices found</div>';
+            return;
+        }
+
+        listContainer.innerHTML = '';
+        Object.keys(devices).forEach(id => {
+            const dev = devices[id];
+            const isMe = id === deviceId;
+            
+            const card = document.createElement('div');
+            card.className = `device-card ${dev.online ? 'online' : 'offline'} ${isMe ? 'is-me' : ''}`;
+            card.style = "background: rgba(255,255,255,0.05); border-radius: 8px; padding: 12px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;";
+            
+            const icon = dev.type === 'electron' ? '🖥️' : '📱';
+            const statusColor = dev.online ? '#4ade80' : '#a0a0a0';
+            
+            card.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="font-size: 24px;">${icon}</div>
+                    <div>
+                        <div style="font-weight: 600;">${dev.name} ${isMe ? '(This device)' : ''}</div>
+                        <div style="font-size: 12px; color: ${statusColor}; margin-top: 2px;">
+                            ${dev.online ? 'Online' : 'Last seen ' + new Date(dev.lastSeen).toLocaleDateString()}
+                        </div>
+                        ${dev.state && dev.state.trackMeta ? `<div style="font-size: 11px; color: #a0a0a0; margin-top: 4px;">♪ Now Playing: ${dev.state.trackMeta.title}</div>` : ''}
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    ${!isMe && dev.online ? `<button class="modal-btn secondary-btn control-device-btn" data-id="${id}" style="padding: 6px 10px; font-size: 11px;">Control</button>` : ''}
+                    ${!isMe && dev.online ? `<button class="modal-btn primary-btn jam-device-btn" data-id="${id}" style="padding: 6px 10px; font-size: 11px;">Jam</button>` : ''}
+                </div>
+            `;
+            
+            listContainer.appendChild(card);
+        });
+
+        // Add control listeners
+        listContainer.querySelectorAll('.control-device-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const targetId = btn.getAttribute('data-id');
+                setupRemoteControlUI(targetId, devices[targetId]);
+            });
+        });
+
+        // Add Jam listeners
+        listContainer.querySelectorAll('.jam-device-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const targetId = btn.getAttribute('data-id');
+                startJamHostSession();
+                alert(`Jam started! You are now the host. ${devices[targetId].name} and other devices on your account will follow your playback.`);
+            });
+        });
+    }
+
+    function setupRemoteControlUI(targetId, deviceData) {
+        const panel = document.getElementById('remote-control-panel');
+        const status = document.getElementById('remote-control-status');
+        if (!panel || !status) return;
+
+        FirebaseRemoteEngine.setControllingDevice(targetId);
+        panel.classList.remove('hidden');
+        status.innerHTML = `Controlling <strong>${deviceData.name}</strong>`;
+
+        // Update UI based on target state if available
+        if (deviceData.state) {
+            const vol = document.getElementById('remote-volume-slider');
+            if (vol) vol.value = deviceData.state.volume || 0.7;
+        }
+
+        // Attach listeners for buttons (one-time or refreshed)
+        const playBtn = document.getElementById('remote-play-pause-btn');
+        const prevBtn = document.getElementById('remote-prev-btn');
+        const nextBtn = document.getElementById('remote-next-btn');
+        const volSlider = document.getElementById('remote-volume-slider');
+
+        // Clear existing listeners by cloning
+        const newPlayBtn = playBtn.cloneNode(true);
+        playBtn.parentNode.replaceChild(newPlayBtn, playBtn);
+        
+        newPlayBtn.addEventListener('click', () => FirebaseRemoteEngine.sendCommand(targetId, 'PLAY_PAUSE'));
+        prevBtn.onclick = () => FirebaseRemoteEngine.sendCommand(targetId, 'PREV');
+        nextBtn.onclick = () => FirebaseRemoteEngine.sendCommand(targetId, 'NEXT');
+        volSlider.oninput = (e) => FirebaseRemoteEngine.sendCommand(targetId, 'SET_VOLUME', { volume: parseFloat(e.target.value) });
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
 
     modalCancelBtn.addEventListener('click', hideDependencyModal);
@@ -1133,11 +1303,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (bottomOfflineBtn) {
         bottomOfflineBtn.addEventListener('click', async () => {
             if (!globalPlayingTrack) return;
-            if (globalPlayingTrack.isLocal) {
-                console.log('Local tracks are already offline.');
-                return;
-            }
-            
             const isOffline = downloadedTracksMap.has(globalPlayingTrack.url);
             const isDownloading = pendingDownloads.has(globalPlayingTrack.url);
             
@@ -1155,8 +1320,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     playPauseBtn.addEventListener('click', () => {
-        if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
-            TailscaleRemoteEngine.sendCommand({ type: 'PLAY_PAUSE', paused: !audioPlayer.paused });
+        const targetId = FirebaseRemoteEngine.getControllingDevice();
+        if (targetId) {
+            FirebaseRemoteEngine.sendCommand(targetId, 'PLAY_PAUSE');
             return;
         }
         if (!audioPlayer.src) return;
@@ -1389,16 +1555,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     nextBtn.addEventListener('click', () => {
-        if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
-            TailscaleRemoteEngine.sendCommand({ type: 'NEXT' });
+        const targetId = FirebaseRemoteEngine.getControllingDevice();
+        if (targetId) {
+            FirebaseRemoteEngine.sendCommand(targetId, 'NEXT');
             return;
         }
         playNextTrack(false);
     });
 
     prevBtn.addEventListener('click', () => {
-        if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
-            TailscaleRemoteEngine.sendCommand({ type: 'PREV' });
+        const targetId = FirebaseRemoteEngine.getControllingDevice();
+        if (targetId) {
+            FirebaseRemoteEngine.sendCommand(targetId, 'PREV');
             return;
         }
         playPreviousTrack();
@@ -1542,12 +1710,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     progressBarContainer.addEventListener('mousedown', (e) => {
-        if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+        const targetId = FirebaseRemoteEngine.getControllingDevice();
+        if (targetId) {
             const rect = progressBarContainer.getBoundingClientRect();
             const clickX = e.clientX - rect.left;
             const percent = Math.max(0, Math.min(1, clickX / rect.width));
             if (audioPlayer.duration) {
-                TailscaleRemoteEngine.sendCommand({ type: 'SEEK', currentTime: percent * audioPlayer.duration });
+                FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
             }
             return;
         }
@@ -1623,9 +1792,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 let clickX = touch.clientX - rect.left;
                 const percent = Math.max(0, Math.min(1, clickX / rect.width));
                 
-                if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+                const targetId = FirebaseRemoteEngine.getControllingDevice();
+                if (targetId) {
                     if (audioPlayer.duration) {
-                        TailscaleRemoteEngine.sendCommand({ type: 'SEEK', currentTime: percent * audioPlayer.duration });
+                        FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
                     }
                 } else if (audioPlayer.duration) {
                     audioPlayer.currentTime = percent * audioPlayer.duration;
@@ -1698,9 +1868,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             isDraggingScrubber = false;
             const percent = updateScrubberVisuals(e);
             
-            if (typeof TailscaleRemoteEngine !== 'undefined' && TailscaleRemoteEngine.isControlling()) {
+            const targetId = FirebaseRemoteEngine.getControllingDevice();
+            if (targetId) {
                 if (audioPlayer.duration) {
-                    TailscaleRemoteEngine.sendCommand({ type: 'SEEK', currentTime: percent * audioPlayer.duration });
+                    FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
                 }
             } else if (audioPlayer.duration) {
                 audioPlayer.currentTime = percent * audioPlayer.duration;
@@ -2160,30 +2331,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     // ───────────────────────────────────────────────────────────
 
-    function processAlbums(tracks) {
-        albumsData = {};
-        
-        tracks.forEach(track => {
-            const albumName = (track.metadata && track.metadata.album) ? track.metadata.album : "Unknown Album";
-            const artistName = (track.metadata && track.metadata.artist) ? track.metadata.artist : "Unknown Artist";
-            const addedAt = track.addedAt || 0;
-            
-            if (!albumsData[albumName]) {
-                albumsData[albumName] = {
-                    name: albumName,
-                    artist: artistName,
-                    coverTrackPath: (track.metadata && track.metadata.hasCover) ? track.relativePath : null,
-                    tracks: [],
-                    addedAt: addedAt
-                };
-            } else if (addedAt > albumsData[albumName].addedAt) {
-                albumsData[albumName].addedAt = addedAt;
-            }
-            albumsData[albumName].tracks.push(track);
-        });
-
-        renderHomeGrid();
-    }
 
     const CARD_PLAY_BTN_HTML = `<button class="card-play-btn" title="Play">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
@@ -2193,11 +2340,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const card = document.createElement('div');
         card.className = 'album-card';
         
-        let artHtml = `<div class="album-card-art"></div>`; 
-        if (albumInfo.coverTrackPath) {
-            const pictureUrl = `${serverBaseUrl}/api/cover?path=${encodeURIComponent(albumInfo.coverTrackPath)}`;
-            artHtml = `<img src="${pictureUrl}" class="album-card-art" alt="Album Cover">`;
-        }
+        const artHtml = albumInfo.coverUrl
+            ? `<img src="${albumInfo.coverUrl}" class="album-card-art" alt="Album Cover" crossorigin="anonymous">`
+            : `<div class="album-card-art"></div>`;
 
         card.innerHTML = `
             <div class="card-art-wrapper">
@@ -2397,10 +2542,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (albumInfo.coverUrl) {
             coverHtml = `<img src="${albumInfo.coverUrl}" class="album-hero-cover" alt="Album Cover" crossorigin="anonymous">`;
             if (albumView) albumView.style.setProperty('--view-bg-image', `url("${albumInfo.coverUrl}")`);
-        } else if (albumInfo.coverTrackPath) {
-            const pictureUrl = `${serverBaseUrl}/api/cover?path=${encodeURIComponent(albumInfo.coverTrackPath)}`;
-            coverHtml = `<img src="${pictureUrl}" class="album-hero-cover" alt="Album Cover">`;
-            if (albumView) albumView.style.setProperty('--view-bg-image', `url("${pictureUrl}")`);
         } else {
             if (albumView) albumView.style.setProperty('--view-bg-image', 'none');
         }
@@ -2501,9 +2642,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             let coverHtml = '';
             if (track.metadata && track.metadata.coverUrl) {
                 coverHtml = `<div class="track-item-cover"><img src="${track.metadata.coverUrl}" crossorigin="anonymous" alt="cover"></div>`;
-            } else if (track.metadata && track.metadata.hasCover && track.relativePath && typeof serverBaseUrl !== 'undefined') {
-                const pictureUrl = `${serverBaseUrl}/api/cover?path=${encodeURIComponent(track.relativePath)}`;
-                coverHtml = `<div class="track-item-cover"><img src="${pictureUrl}" alt="cover"></div>`;
             } else {
                 coverHtml = `<div class="track-item-cover"><svg class="fallback-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg></div>`;
             }
@@ -2526,23 +2664,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const isDownloaded = downloadedTracksMap.has(track.url);
             const downloadProgress = pendingDownloads.get(track.url);
             const isDownloading = downloadProgress !== undefined;
-            const isUploading = pendingUploads.has(track.url);
 
-            // 4-state indicator logic
+            // Offline indicator logic
             let indicatorClass = '';
             let indicatorTitle = '';
-            if (track.isBoth) {
-                indicatorClass = 'is-both';
-                indicatorTitle = 'Local & Server';
-            } else if (isDownloading) {
+            if (isDownloading) {
                 indicatorClass = 'downloading';
                 indicatorTitle = `Downloading... ${Math.round(downloadProgress * 100)}%`;
-            } else if (isUploading) {
-                indicatorClass = 'is-uploading';
-                indicatorTitle = 'Uploading to Server...';
-            } else if (track.isLocal) {
-                indicatorClass = 'is-local';
-                indicatorTitle = 'Local File (Click to Push to Server)';
             } else if (isDownloaded) {
                 indicatorClass = 'downloaded';
                 indicatorTitle = 'Available Offline (Click to remove)';
@@ -2552,7 +2680,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const offlineIconHtml = `
                 <button class="icon-button offline-status-circle track-offline-btn ${indicatorClass}" 
-                        style="--progress: ${isDownloading ? Math.round(downloadProgress * 100) : (isDownloaded || track.isLocal || track.isBoth ? 100 : 0)}%"
+                        style="--progress: ${isDownloading ? Math.round(downloadProgress * 100) : (isDownloaded ? 100 : 0)}%"
                         title="${indicatorTitle}">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="10"></circle>
@@ -2596,13 +2724,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 statusBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     
-                    // Rely on visual state to determine action - ensures UI and logic are 100% in sync
-                    const isVisualDownloaded = statusBtn.classList.contains('downloaded') || statusBtn.classList.contains('is-local') || statusBtn.classList.contains('is-both');
+                    // Rely on visual state to determine action
+                    const isVisualDownloaded = statusBtn.classList.contains('downloaded');
                     const isVisualDownloading = statusBtn.classList.contains('downloading');
 
-                    if (statusBtn.classList.contains('is-both')) {
-                        console.log('Track is already synced.');
-                    } else if (isVisualDownloaded) {
+                    if (isVisualDownloaded) {
                         if (confirm('Remove this track from offline storage?')) {
                             removeOfflineTrack(track.url);
                         }
@@ -3271,55 +3397,73 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ── Playlist System ───────────────────────────────────────────────────────
 
-    async function fetchPlaylists() {
-        try {
-            const raw = localStorage.getItem('personalPlaylists');
-            allPlaylists = raw ? JSON.parse(raw) : [];
-        } catch(e) {
-            console.error('Failed to parse local playlists', e);
-            allPlaylists = [];
-        } finally {
-            renderPlaylistsStrip();
-        }
-    }
+    let playlistUnsubscribe = null;
 
-    function savePlaylistsLocal() {
-        localStorage.setItem('personalPlaylists', JSON.stringify(allPlaylists));
+    async function fetchPlaylists() {
+        if (!currentUser) return;
+        const uid = currentUser.uid;
+        
+        // Remove any existing listener
+        if (playlistUnsubscribe) playlistUnsubscribe();
+
+        // Real-time listener from Firestore
+        playlistUnsubscribe = window._fbFS.collection('users').doc(uid).collection('playlists')
+            .orderBy('createdAt', 'desc')
+            .onSnapshot(snap => {
+                allPlaylists = snap.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                renderPlaylistsStrip();
+                
+                // If we are currently viewing a playlist, refresh its view to catch updates from other devices
+                if (playlistView && playlistView.classList.contains('active') && activePlaylistId) {
+                    const current = allPlaylists.find(p => p.id === activePlaylistId);
+                    if (current) openPlaylistView(current);
+                    else switchToHomeView(); // playlist was deleted
+                }
+            }, err => {
+                console.error('Playlist sync error', err);
+            });
     }
 
     async function createPlaylist(name) {
+        if (!currentUser) return;
         try {
-            const newPl = { id: Date.now().toString(), name, tracks: [] };
-            allPlaylists.push(newPl);
-            savePlaylistsLocal();
-            renderPlaylistsStrip();
-            return newPl;
+            const uid = currentUser.uid;
+            const docRef = await window._fbFS.collection('users').doc(uid).collection('playlists').add({
+                name,
+                tracks: [],
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            return { id: docRef.id, name, tracks: [] };
         } catch(e) { console.error('Failed to create playlist', e); }
         return null;
     }
 
     async function deletePlaylist(id) {
-        allPlaylists = allPlaylists.filter(p => p.id !== id);
-        savePlaylistsLocal();
-        renderPlaylistsStrip();
-        switchToHomeView();
+        if (!currentUser) return;
+        try {
+            const uid = currentUser.uid;
+            await window._fbFS.collection('users').doc(uid).collection('playlists').doc(id).delete();
+            switchToHomeView();
+        } catch(e) { console.error('Failed to delete playlist', e); }
     }
 
     async function renamePlaylist(id, name) {
-        const idx = allPlaylists.findIndex(p => p.id === id);
-        if (idx !== -1) {
-            allPlaylists[idx].name = name;
-            savePlaylistsLocal();
-            renderPlaylistsStrip();
-        }
+        if (!currentUser) return;
+        try {
+            const uid = currentUser.uid;
+            await window._fbFS.collection('users').doc(uid).collection('playlists').doc(id).update({ name });
+        } catch(e) { console.error('Failed to rename playlist', e); }
     }
 
     async function addTrackToPlaylist(playlistId, track) {
+        if (!currentUser) return;
         const pl = allPlaylists.find(p => p.id === playlistId);
         if (!pl) return;
         if (pl.tracks.find(t => t.url === track.url)) return;
         
-        // Strip down the track for safe saving
         const trackData = {
             url: track.url,
             isCloud: track.isCloud,
@@ -3332,24 +3476,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function removeTrackFromPlaylist(playlistId, trackUrl, rowEl) {
+        if (!currentUser) return;
         const pl = allPlaylists.find(p => p.id === playlistId);
         if (!pl) return;
         const newTracks = pl.tracks.filter(t => t.url !== trackUrl);
         await updatePlaylistTracks(playlistId, newTracks);
-        if (rowEl) rowEl.remove();
     }
 
     async function updatePlaylistTracks(playlistId, tracks) {
-        const idx = allPlaylists.findIndex(p => p.id === playlistId);
-        if (idx !== -1) {
-            allPlaylists[idx].tracks = tracks;
-            savePlaylistsLocal();
-            renderPlaylistsStrip();
-            if (playlistView && playlistView.classList.contains('active') && activePlaylistId === playlistId) {
-                openPlaylistView(allPlaylists[idx]);
-            }
-        }
+        if (!currentUser) return;
+        try {
+            const uid = currentUser.uid;
+            await window._fbFS.collection('users').doc(uid).collection('playlists').doc(playlistId).update({ tracks });
+        } catch(e) { console.error('Failed to update playlist tracks', e); }
     }
+
 
     // Build a 2x2 collage from first 4 cover-bearing tracks in the playlist
     function buildCollageHtml(playlist) {
@@ -3436,11 +3577,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         playlistView.classList.remove('hidden');
         playlistView.classList.add('active');
         
-        // Find first cover for background
-        const firstCoverTrack = playlist.tracks.find(t => t.metadata && t.metadata.hasCover);
+        // Set background from cloud cover art if available
+        const firstCoverTrack = playlist.tracks.find(t => t.metadata && t.metadata.coverUrl);
         if (firstCoverTrack) {
-            const url = `${serverBaseUrl}/api/cover?path=${encodeURIComponent(firstCoverTrack.relativePath)}`;
-            if (playlistView) playlistView.style.setProperty('--view-bg-image', `url("${url}")`);
+            if (playlistView) playlistView.style.setProperty('--view-bg-image', `url("${firstCoverTrack.metadata.coverUrl}")`);
         } else {
             if (playlistView) playlistView.style.setProperty('--view-bg-image', 'none');
         }
@@ -3896,7 +4036,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (window.electronAPI) {
             window.electronAPI.updatePresence({ title, artist, startTime: Date.now(), isPaused: false });
         }
-        globalPlayingTrack = track;
+        window.globalPlayingTrack = track;
+
+        // Broadcast to Jam if we are hosting
+        if (typeof isJamHost !== 'undefined' && isJamHost) {
+            broadcastJamState(track);
+        }
         prefetchedNextTrackData = null; // Clear prefetch once track starts
 
         let fullAudioUrl = track.url;
@@ -4152,9 +4297,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    async function initiateUpload(track) {
-        // Obsolete function in standalone. Keeping to prevent ReferenceErrors from any missed UI buttons.
-    }
+
 
     async function removeOfflineTrack(trackUrl) {
         const localPath = downloadedTracksMap.get(trackUrl);
@@ -4242,10 +4385,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (window.electronAPI) {
         window.electronAPI.onDownloadProgress(({ url, progress }) => {
-            // url in progress event is the full URL, we need the track path /api/audio/...
-            const trackPath = url.replace(serverBaseUrl, '');
-            pendingDownloads.set(trackPath, progress);
-            // Throttle UI refreshes? For now just refresh
+            pendingDownloads.set(url, progress);
             refreshCurrentView();
         });
     }
@@ -4407,7 +4547,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         switchToHomeView(false); // fallback
     }
 
-    // Expose UI update helper for TailscaleRemoteEngine
+    // Update UI when now playing metadata changes
     window.updateNowPlayingUI = (metadata) => {
         if (!metadata) return;
         bottomTitle.textContent = metadata.title || 'Unknown Track';
@@ -4419,231 +4559,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
-    // Expose settings helpers globally so TailscaleRemoteEngine (outside this scope) can reach them
+    // Expose settings helpers globally so external engines can reach them
     window._openSettings = () => { renderSettingsPanel(); openSettings(); };
-});
 
-// ─── Tailscale Remote Engine ──────────────────────────────────────────────────
-const TailscaleRemoteEngine = (() => {
-    let ws = null;
-    let remoteHost = null;
-    let isControlling = false;
-    let stateInterval = null;
+    // Expose core playback functions globally for Firebase Remote Engine
+    window.playTrack = playTrack;
+    window.playNextTrack = playNextTrack;
+    window.playPreviousTrack = playPreviousTrack;
+    window.addToQueue = addToQueue;
 
-    function updateDeviceBtn(activeClientCount = 0) {
-        const btn = document.getElementById('device-btn');
-        const statusEl = document.getElementById('device-popover-status');
-        if (btn) {
-            if (isControlling || activeClientCount > 0) {
-                btn.style.color = 'var(--accent)';
-                btn.style.filter = 'drop-shadow(0 0 6px var(--accent))';
-                btn.title = isControlling ? `Playing on: ${remoteHost}` : 'Remote Device Connected';
-            } else {
-                btn.style.color = '';
-                btn.style.filter = '';
-                btn.title = 'Connect Device';
-            }
-        }
-        if (statusEl) {
-            if (isControlling) {
-                statusEl.innerHTML = `<span style="color:#4ade80">&#9679; Playing on <strong>${remoteHost}</strong></span>`;
-            } else if (activeClientCount > 0) {
-                statusEl.innerHTML = `<span style="color:#4ade80">&#9679; ${activeClientCount} Remote device(s) connected</span>`;
-            } else {
-                statusEl.textContent = 'No devices connected';
-            }
-        }
+    // END of appInit()
     }
 
-    function broadcastState() {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const audioEl = document.getElementById('audio-player');
-        if (!audioEl) return;
-        ws.send(JSON.stringify({
-            type: 'STATE_UPDATE',
-            currentTime: audioEl.currentTime,
-            duration: audioEl.duration,
-            paused: audioEl.paused,
-            volume: audioEl.volume
-        }));
-    }
+}); // END of DOMContentLoaded
 
-    function setStatus(html) {
-        const el = document.getElementById('tailscale-status');
-        if (el) el.innerHTML = html;
-        else console.log('[Tailscale]', html);
-    }
-
-    function connect(host, onFinish) {
-        disconnect();
-        remoteHost = host;
-        let url = host;
-        
-        // If they didn't provide a full connection string, build one based on the page's protocol
-        if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
-            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-            // If on https, maybe they are using tailscale serve (443) or a proxy on 41000. We default to 41000
-            // but they can always type 'wss://hostname:443' manually in the box if needed.
-            url = `${protocol}${host}:41000`;
-        }
-
-        try {
-            ws = new WebSocket(url);
-
-            ws.onopen = () => {
-                isControlling = true;
-                updateDeviceBtn();
-                setStatus(`<span style="color:#4ade80">✓ Connected to <strong>${host}</strong></span>`);
-                // Clients (phones) DON'T broadcast their local state to the host.
-                // This prevents the 3-second snapback issue.
-                console.log(`[Tailscale] Connected as Remote to ${host}`);
-                if (onFinish) onFinish({ success: true });
-            };
-
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    handleRemoteCommand(data);
-                } catch(e) {}
-            };
-
-            ws.onerror = () => {
-                setStatus(`<span style="color:#f87171">✗ Could not reach <strong>${host}</strong>. Is the Desktop app open and on Tailscale?</span>`);
-                if (onFinish) onFinish({ success: false });
-            };
-
-            ws.onclose = () => {
-                isControlling = false;
-                clearInterval(stateInterval);
-                updateDeviceBtn();
-                setStatus(`Connection to <strong>${host}</strong> closed.`);
-                if (onFinish) onFinish({ success: false });
-            };
-
-        } catch(e) {
-            setStatus(`Error: ${e.message}`);
-            if (onFinish) onFinish({ success: false });
-        }
-    }
-
-    function disconnect() {
-        if (ws) { ws.close(); ws = null; }
-        isControlling = false;
-        remoteHost = null;
-        clearInterval(stateInterval);
-        updateDeviceBtn();
-    }
-
-    function sendCommand(payload) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify(payload));
-    }
-
-    function handleRemoteCommand(data) {
-        // When acting as the CLIENT (PWA remote), incoming data is state updates from Desktop.
-        if (data.type === 'STATE_UPDATE') {
-            if (window.electronAPI) return; // Ignore state updates if we are the Host (Desktop)!
-            
-            const audioEl = document.getElementById('audio-player');
-            if (!audioEl) return;
-            
-            // Sync current track metadata if it changed
-            if (data.metadata && typeof updateNowPlayingUI === 'function') {
-                updateNowPlayingUI(data.metadata);
-            }
-
-            if (Math.abs(audioEl.currentTime - data.currentTime) > 2) {
-                audioEl.currentTime = data.currentTime;
-            }
-        } else if (data.type === 'PLAY_TRACK') {
-            const track = data.track;
-            if (!track) return;
-            const title = (track.metadata && track.metadata.title) ? track.metadata.title : track.filename;
-            const artist = (track.metadata && track.metadata.artist) ? track.metadata.artist : 'Unknown Artist';
-            if (typeof playTrack === 'function') playTrack(track, title, artist);
-        } else if (data.type === 'PLAY_PAUSE') {
-            const audioEl = document.getElementById('audio-player');
-            if (!audioEl) return;
-            if (data.paused) audioEl.pause(); else audioEl.play();
-        } else if (data.type === 'SEEK') {
-            const audioEl = document.getElementById('audio-player');
-            if (audioEl && data.currentTime !== undefined) audioEl.currentTime = data.currentTime;
-        } else if (data.type === 'NEXT') {
-            if (typeof playNextTrack === 'function') playNextTrack(false);
-        } else if (data.type === 'PREV') {
-            if (typeof playPreviousTrack === 'function') playPreviousTrack();
-        }
-    }
-
-    // Register device-btn: toggle the device popover on click
-    const devBtn = document.getElementById('device-btn');
-    const devPopover = document.getElementById('device-popover');
-    const devPopoverSettingsBtn = document.getElementById('device-popover-settings-btn');
-
-    if (devBtn && devPopover) {
-        devBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            devPopover.classList.toggle('hidden');
-        });
-
-        // Dismiss popover when clicking anywhere outside it
-        document.addEventListener('click', (e) => {
-            if (!devPopover.contains(e.target) && e.target !== devBtn) {
-                devPopover.classList.add('hidden');
-            }
-        });
-    }
-
-    // "Manage in Settings" button inside the popover
-    // Uses window._openSettings because this engine runs outside the DOMContentLoaded scope
-    if (devPopoverSettingsBtn) {
-        devPopoverSettingsBtn.addEventListener('click', () => {
-            if (devPopover) devPopover.classList.add('hidden');
-            if (typeof window._openSettings === 'function') window._openSettings();
-        });
-    }
-
-    // If running on Electron (Desktop), listen for inbound commands from remote phones
-    if (window.electronAPI && window.electronAPI.onRemoteCommand) {
-        window.electronAPI.onRemoteCommand((data) => {
-            handleRemoteCommand(data);
-        });
-
-        // Listen for remote client connection changes on the Desktop
-        if (window.electronAPI.onRemoteClientCountChanged) {
-            window.electronAPI.onRemoteClientCountChanged((count) => {
-                updateDeviceBtn(count);
-            });
-        }
-
-        // Host (Desktop) broadcasts its state to all connected remotes every 2 seconds
-        setInterval(() => {
-            const audioEl = document.getElementById('audio-player');
-            if (!audioEl) return;
-            
-            const state = {
-                type: 'STATE_UPDATE',
-                currentTime: audioEl.currentTime,
-                duration: audioEl.duration,
-                paused: audioEl.paused,
-                volume: audioEl.volume
-            };
-
-            // If a track is playing, include its metadata for remote UI sync
-            if (window.globalPlayingTrack) {
-                state.metadata = window.globalPlayingTrack.metadata || { title: window.globalPlayingTrack.filename };
-            }
-
-            window.electronAPI.remoteBroadcastState(state);
-        }, 2000);
-    }
-
-    // Auto-connect on startup if host was saved
-    const savedHost = localStorage.getItem('tailscaleRemoteHost');
-    if (savedHost) {
-        // Slight delay so the app fully initialises first
-        setTimeout(() => connect(savedHost), 2000);
-    }
-
-    return { connect, disconnect, sendCommand, isControlling: () => isControlling };
-})();

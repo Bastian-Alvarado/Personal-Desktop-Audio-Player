@@ -4,53 +4,9 @@ const path = require('path');
 const fs = require('fs');
 const { protocol, net } = require('electron');
 const DiscordRPC = require('discord-rpc');
-const WebSocket = require('ws');
 
 let mainWindow;
 
-// --- Tailscale Remote Server Setup ---
-let wsServer = null;
-let activeWsClients = new Set();
-
-function startWebSocketServer() {
-    try {
-        wsServer = new WebSocket.Server({ port: 41000 });
-        console.log('Tailscale Remote Server Listening on Port 41000');
-        
-        wsServer.on('connection', (ws) => {
-            console.log('Remote Device Connected');
-            activeWsClients.add(ws);
-            if (mainWindow) mainWindow.webContents.send('remote-client-count-changed', activeWsClients.size);
-            
-            ws.on('message', (message) => {
-                try {
-                    const data = JSON.parse(message);
-                    if (mainWindow) {
-                        mainWindow.webContents.send('remote-incoming-command', data);
-                    }
-                } catch (e) { console.error('WS Parse Error', e); }
-            });
-            
-            ws.on('close', () => {
-                console.log('Remote Device Disconnected');
-                activeWsClients.delete(ws);
-                if (mainWindow) mainWindow.webContents.send('remote-client-count-changed', activeWsClients.size);
-            });
-        });
-    } catch (e) {
-        console.error('Failed to start WS Server', e);
-    }
-}
-
-// IPC from Renderer to Broadcast to Remotes
-ipcMain.on('remote-broadcast-state', (event, stateData) => {
-    const payload = JSON.stringify(stateData);
-    activeWsClients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(payload);
-        }
-    });
-});
 
 // --- Discord Rich Presence Setup ---
 const clientId = '1490907882877620254'; // User's personalization Client ID
@@ -70,16 +26,7 @@ ipcMain.handle('get-downloaded-list', () => {
     return getDownloadsMetadata();
 });
 
-ipcMain.handle('select-directory', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, {
-        properties: ['openDirectory', 'createDirectory'],
-        title: 'Select Music Folder',
-        buttonLabel: 'Add Folder'
-    });
-    
-    if (result.canceled) return null;
-    return result.filePaths[0];
-});
+
 
 ipcMain.handle('download-track', async (event, { url, originalTrackingUrl, metadata, coverUrl, lyrics }) => {
     const trackingId = originalTrackingUrl || url;
@@ -89,7 +36,7 @@ ipcMain.handle('download-track', async (event, { url, originalTrackingUrl, metad
     const safeFilenameBase = encodeURIComponent(trackingId).replace(/%/g, '_').slice(-100);
     const targetPath = path.join(OFFLINE_DIR, safeFilenameBase + '.cache');
     const coverPath = path.join(OFFLINE_DIR, safeFilenameBase + '.cache.cover.jpg');
-    
+
     try {
         // 1. Download Audio
         const response = await net.fetch(url);
@@ -122,9 +69,9 @@ ipcMain.handle('download-track', async (event, { url, originalTrackingUrl, metad
 
         return new Promise((resolve) => {
             writer.on('finish', () => {
-                metadataMap[trackingId] = { 
-                    localPath: safeFilenameBase + '.cache', 
-                    downloadedAt: Date.now(), 
+                metadataMap[trackingId] = {
+                    localPath: safeFilenameBase + '.cache',
+                    downloadedAt: Date.now(),
                     metadata: metadata,
                     lyrics: lyrics // Store lyrics directly in JSON metadata
                 };
@@ -187,7 +134,7 @@ async function setActivity(details, state, startTime = null, isPaused = false) {
             largeImageText: 'SimonRelays',
             instance: false,
         };
-        
+
         if (startTime && !isPaused) {
             activity.startTimestamp = Math.floor(startTime / 1000);
         }
@@ -234,6 +181,28 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
 
+    // Allow Firebase Auth Google Sign-In popup to open.
+    // Without this, Electron silently blocks signInWithPopup() and nothing happens.
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        // Only allow Google auth-related URLs to open as a popup
+        if (url.startsWith('https://accounts.google.com') || url.startsWith('https://simonrelays.firebaseapp.com')) {
+            return {
+                action: 'allow',
+                overrideBrowserWindowOptions: {
+                    width: 500,
+                    height: 650,
+                    title: 'Sign in with Google',
+                    webPreferences: {
+                        nodeIntegration: false,
+                        contextIsolation: true,
+                    }
+                }
+            };
+        }
+        // Block all other popups
+        return { action: 'deny' };
+    });
+
     // Notify renderer of maximize/unmaximize
     mainWindow.on('maximize', () => mainWindow.webContents.send('window-state-changed', true));
     mainWindow.on('unmaximize', () => mainWindow.webContents.send('window-state-changed', false));
@@ -248,7 +217,7 @@ app.whenReady().then(() => {
                 app.relaunch();
                 app.exit(0);
                 resolve(true);
-            }, 3000); 
+            }, 3000);
         });
     });
 
@@ -278,8 +247,6 @@ app.whenReady().then(() => {
 
 
     createWindow();
-    startWebSocketServer();
-
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
