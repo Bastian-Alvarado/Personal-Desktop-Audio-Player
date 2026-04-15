@@ -11,6 +11,11 @@ let isJamHost = false;
 let activeJamHostId = null;
 let jamSyncInterval = null;
 
+// Universal Sync Globals
+let masterDeviceId = null;
+let contextSyncInterval = null;
+let isOfflineBreak = false;
+
 // ── Firebase Modules (Global Scope for Hoisting) ──────────────────────────────
 
 function initOfflineIndicator() {
@@ -109,17 +114,152 @@ function initJamListener() {
         }
     });
 
-    window._fbDB.ref(`users/${uid}/jam/sync`).on('value', snap => {
-        const s = snap.val();
-        if (!s || isJamHost) return;
+    });
+}
+
+// ── Universal Sync Engine ────────────────────────────────────────────────────
+
+function initActiveContextListener() {
+    if (!currentUser || isOfflineBreak) return;
+    const uid = currentUser.uid;
+
+    // Listen for playback context changes (track, queue, paused, master)
+    window._fbDB.ref(`users/${uid}/activeContext`).on('value', async snap => {
+        const context = snap.val();
+        if (!context) return;
+
+        masterDeviceId = context.masterDeviceId;
         const audioPlayer = document.getElementById('audio-player');
-        if (!audioPlayer) return;
-        const elapsedSinceEpoch = (Date.now() - s.epoch) / 1000;
-        const expectedTime = s.currentTime + elapsedSinceEpoch;
-        if (Math.abs(audioPlayer.currentTime - expectedTime) > 0.6) {
-            audioPlayer.currentTime = expectedTime;
+
+        // AUTO-CLAIM MASTER: If no master exists and we just logged in, we take it
+        if (!masterDeviceId && currentUser) {
+            console.log('[Sync] No master detected. Claiming master control...');
+            takeMasterControl();
+            return;
+        }
+
+        // 1. Sync Track & Metadata (All devices)
+        if (context.track && (!window.globalPlayingTrack || window.globalPlayingTrack.url !== context.track.url)) {
+            console.log('[Sync] New track received from context:', context.track.metadata?.title);
+            
+            // If we are slave, we DON'T load audio, we just update UI
+            if (deviceId !== masterDeviceId) {
+                window.globalPlayingTrack = context.track;
+                // Force UI update without playing
+                if (typeof updateUI === 'function') updateUI(context.track); 
+                if (audioPlayer) {
+                    audioPlayer.src = ''; // Slave doesn't load audio
+                }
+            } else {
+                // If we are master, we play it
+                if (typeof playTrack === 'function') {
+                    playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, true);
+                }
+            }
+        }
+
+        // 2. Sync Queue
+        if (context.queue) {
+            userQueue = context.queue;
+            if (typeof renderQueueView === 'function' && queueView && queueView.classList.contains('active')) {
+                renderQueueView();
+            }
+        }
+
+        // 3. Sync Play/Pause & Time (Only for Master)
+        if (deviceId === masterDeviceId && audioPlayer) {
+            if (context.isPaused !== undefined && context.isPaused !== audioPlayer.paused) {
+                context.isPaused ? audioPlayer.pause() : audioPlayer.play();
+            }
+            
+            // Time sync (Master follows the context if it's lagging or ahead significantly)
+            if (context.timestamp !== undefined) {
+                const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
+                const expectedTime = context.timestamp + elapsedSinceUpdate;
+                if (Math.abs(audioPlayer.currentTime - expectedTime) > 2) {
+                    audioPlayer.currentTime = expectedTime;
+                }
+            }
+        } else if (audioPlayer && audioPlayer.src) {
+             // If we were master but no longer are, stop audio
+             audioPlayer.src = '';
+             audioPlayer.load();
+        }
+        
+        // Update device list UI to show who is Master
+        if (settingsView && settingsView.classList.contains('active')) {
+            renderSettingsPanel();
         }
     });
+
+    // Handle offline break
+    window.addEventListener('offline', () => {
+        console.log('[Sync] Offline detected. Breaking sync.');
+        isOfflineBreak = true;
+    });
+    window.addEventListener('online', () => {
+        console.log('[Sync] Online detected. Restoring sync.');
+        isOfflineBreak = false;
+        initActiveContextListener();
+    });
+}
+
+function broadcastActiveContext(force = false) {
+    if (!currentUser || deviceId !== masterDeviceId || isOfflineBreak) return;
+    const uid = currentUser.uid;
+    const audioPlayer = document.getElementById('audio-player');
+    
+    const contextData = {
+        track: window.globalPlayingTrack,
+        queue: userQueue,
+        isPaused: audioPlayer ? audioPlayer.paused : true,
+        timestamp: audioPlayer ? audioPlayer.currentTime : 0,
+        masterDeviceId: deviceId,
+        lastUpdate: firebase.database.ServerValue.TIMESTAMP
+    };
+
+    window._fbDB.ref(`users/${uid}/activeContext`).set(contextData);
+}
+
+function startContextSyncInterval() {
+    if (contextSyncInterval) clearInterval(contextSyncInterval);
+    contextSyncInterval = setInterval(() => {
+        if (deviceId === masterDeviceId) {
+            broadcastActiveContext();
+        }
+    }, 5000); // Heartbeat sync
+}
+
+async function takeMasterControl() {
+    if (!currentUser) return;
+    console.log('[Sync] Taking master control of playback...');
+    
+    // 1. Get current context to know where to start
+    const uid = currentUser.uid;
+    const snap = await window._fbDB.ref(`users/${uid}/activeContext`).once('value');
+    const context = snap.val();
+    
+    masterDeviceId = deviceId;
+    
+    if (context && context.track) {
+        const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
+        const startTime = context.timestamp + elapsedSinceUpdate;
+        
+        // Change master first
+        await window._fbDB.ref(`users/${uid}/activeContext/masterDeviceId`).set(deviceId);
+        
+        // Then start playing locally
+        if (typeof playTrack === 'function') {
+            await playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist);
+            const audioPlayer = document.getElementById('audio-player');
+            if (audioPlayer) audioPlayer.currentTime = startTime;
+        }
+    } else {
+        // Just set master if nothing is playing
+        await window._fbDB.ref(`users/${uid}/activeContext/masterDeviceId`).set(deviceId);
+    }
+    
+    renderSettingsPanel();
 }
 
 // Defining as a class/object to survive hoisting vs const assignment
@@ -322,6 +462,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         initOfflineIndicator();
         initDevicePresence();
         initJamListener();
+        initActiveContextListener();
+        startContextSyncInterval();
         FirebaseRemoteEngine.initCommandListener();
 
         console.log('[Cloud] Firebase services initialized.');
@@ -975,6 +1117,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (queueView.classList.contains('active')) {
             renderQueueView();
         }
+        
+        // UNIVERSAL SYNC
+        if (deviceId === masterDeviceId) {
+            broadcastActiveContext(true);
+        }
     }
 
     // Modal Logic
@@ -1086,6 +1233,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             </div>
 
             <div class="settings-section">
+                <div class="settings-section-title">Devices & Handoff</div>
+                <div id="settings-device-list">
+                    <div class="loading">Searching for devices...</div>
+                </div>
+            </div>
+
+            <div class="settings-section">
                 <div class="settings-section-title">My Devices</div>
                 <div id="settings-device-list" class="settings-device-list">
                     <div class="loading-state">Loading devices...</div>
@@ -1157,10 +1311,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         Object.keys(devices).forEach(id => {
             const dev = devices[id];
             const isMe = id === deviceId;
+            const isMaster = dev.online && masterDeviceId === id;
             
             const card = document.createElement('div');
             card.className = `device-card ${dev.online ? 'online' : 'offline'} ${isMe ? 'is-me' : ''}`;
-            card.style = "background: rgba(255,255,255,0.05); border-radius: 8px; padding: 12px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;";
+            card.style = `background: ${isMaster ? 'rgba(255,107,129,0.1)' : 'rgba(255,255,255,0.05)'}; border-radius: 8px; padding: 12px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; border: 1px solid ${isMaster ? 'var(--primary)' : 'transparent'}`;
             
             const icon = dev.type === 'electron' ? '🖥️' : '📱';
             const statusColor = dev.online ? '#4ade80' : '#a0a0a0';
@@ -1169,36 +1324,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <div style="display: flex; align-items: center; gap: 12px;">
                     <div style="font-size: 24px;">${icon}</div>
                     <div>
-                        <div style="font-weight: 600;">${dev.name} ${isMe ? '(This device)' : ''}</div>
+                        <div style="font-weight: 600;">
+                            ${dev.name} ${isMe ? '(This device)' : ''}
+                            ${isMaster ? '<span style="color:var(--primary); font-size: 10px; margin-left: 8px; vertical-align: middle;">🔊 MASTER</span>' : ''}
+                        </div>
                         <div style="font-size: 12px; color: ${statusColor}; margin-top: 2px;">
                             ${dev.online ? 'Online' : 'Last seen ' + new Date(dev.lastSeen).toLocaleDateString()}
                         </div>
-                        ${dev.state && dev.state.trackMeta ? `<div style="font-size: 11px; color: #a0a0a0; margin-top: 4px;">♪ Now Playing: ${dev.state.trackMeta.title}</div>` : ''}
                     </div>
                 </div>
                 <div style="display: flex; gap: 8px;">
-                    ${!isMe && dev.online ? `<button class="modal-btn secondary-btn control-device-btn" data-id="${id}" style="padding: 6px 10px; font-size: 11px;">Control</button>` : ''}
-                    ${!isMe && dev.online ? `<button class="modal-btn primary-btn jam-device-btn" data-id="${id}" style="padding: 6px 10px; font-size: 11px;">Jam</button>` : ''}
+                    ${isMe && !isMaster && dev.online ? `<button class="modal-btn primary-btn take-control-btn" style="padding: 6px 12px; font-size: 11px;">Play on this device</button>` : ''}
+                    ${!isMe && dev.online ? `<button class="modal-btn secondary-btn jam-device-btn" data-id="${id}" style="padding: 6px 10px; font-size: 11px;">Jam Together</button>` : ''}
                 </div>
             `;
             
             listContainer.appendChild(card);
         });
 
-        // Add control listeners
-        listContainer.querySelectorAll('.control-device-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const targetId = btn.getAttribute('data-id');
-                setupRemoteControlUI(targetId, devices[targetId]);
+        // Add take-control listener
+        const takeBtn = listContainer.querySelector('.take-control-btn');
+        if (takeBtn) {
+            takeBtn.addEventListener('click', () => {
+                takeMasterControl();
             });
-        });
+        }
 
-        // Add Jam listeners
+        // Add Jam listeners (Multi-Speaker Mode)
         listContainer.querySelectorAll('.jam-device-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const targetId = btn.getAttribute('data-id');
                 startJamHostSession();
-                alert(`Jam started! You are now the host. ${devices[targetId].name} and other devices on your account will follow your playback.`);
+                alert(`Jam started! You are now the host. Other devices on your account will join and play audio simultaneously.`);
             });
         });
     }
@@ -4041,6 +4198,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Broadcast to Jam if we are hosting
         if (typeof isJamHost !== 'undefined' && isJamHost) {
             broadcastJamState(track);
+        }
+
+        // UNIVERSAL SYNC: Update context if we are master
+        if (deviceId === masterDeviceId) {
+            broadcastActiveContext(true);
         }
         prefetchedNextTrackData = null; // Clear prefetch once track starts
 
