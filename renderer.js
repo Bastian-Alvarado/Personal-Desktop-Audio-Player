@@ -202,7 +202,9 @@ function initActiveContextListener() {
                             }
                             const elapsed = Math.max(0, (getServerTime() - context.lastUpdate) / 1000);
                             const interpolated = Math.min(context.timestamp + elapsed, duration || Infinity);
-                            updateSlaveProgress(interpolated);
+                            if (typeof isDraggingScrubber !== 'undefined' && !isDraggingScrubber) {
+                                updateSlaveProgress(interpolated);
+                            }
                             slaveRafId = requestAnimationFrame(loopFrame);
                         };
                         slaveRafId = requestAnimationFrame(loopFrame);
@@ -1923,7 +1925,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let isDraggingScrubber = false;
 
     function updateScrubberVisuals(e) {
-        if (!audioPlayer.duration) return;
+        const duration = audioPlayer.duration || window.globalPlayingTrack?.metadata?.duration;
+        if (!duration) return 0;
         const rect = progressBarContainer.getBoundingClientRect();
         let clickX = e.clientX - rect.left;
         
@@ -1935,7 +1938,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // update local visuals
         progressFill.style.width = `${percent * 100}%`;
-        currentTimeEl.textContent = formatTime(percent * audioPlayer.duration);
+        currentTimeEl.textContent = formatTime(percent * duration);
         return percent;
     }
 
@@ -1946,41 +1949,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     progressBarContainer.addEventListener('mousedown', (e) => {
-        const uid = currentUser?.uid;
-        const rect = progressBarContainer.getBoundingClientRect();
-        const clickX = e.clientX - rect.left;
-        const percent = Math.max(0, Math.min(1, clickX / rect.width));
-
-        // UNIVERSAL SYNC: If we are slave, we broadcast a seek to the account
-        if (deviceId !== masterDeviceId && uid) {
-            // We use the last known duration from the context or the local track
-            const duration = audioPlayer.duration || (window.globalPlayingTrack?.metadata?.duration);
-            if (duration) {
-                window._fbDB.ref(`users/${uid}/activeContext`).update({
-                    timestamp: percent * duration,
-                    lastUpdate: firebase.database.ServerValue.TIMESTAMP
-                });
-            }
-            return;
-        }
-
-        // LEGACY / DIRECT REMOTE CONTROL
-        const targetId = FirebaseRemoteEngine.getControllingDevice();
-        if (targetId) {
-            if (audioPlayer.duration) {
-                FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
-            }
-            return;
-        }
-
-        if (!audioPlayer.src) return;
+        if (!audioPlayer.src && deviceId === masterDeviceId && !FirebaseRemoteEngine.getControllingDevice()) return;
         if (isSeekingDisabled()) return;
         isDraggingScrubber = true;
         updateScrubberVisuals(e);
     });
 
     progressBarContainer.addEventListener('mousemove', (e) => {
-        if (!audioPlayer.duration) return;
+        const duration = audioPlayer.duration || window.globalPlayingTrack?.metadata?.duration;
+        if (!duration) return;
         
         const rect = progressBarContainer.getBoundingClientRect();
         let hoverX = e.clientX - rect.left;
@@ -1995,7 +1972,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (isSeekingDisabled()) {
             hoverTooltip.textContent = "Seeking disabled for M4A/AAC files";
         } else {
-            hoverTooltip.textContent = formatTime(percent * audioPlayer.duration);
+            hoverTooltip.textContent = formatTime(percent * duration);
         }
     });
 
@@ -2013,10 +1990,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const percent = clickX / rect.width;
         progressFill.style.width = `${percent * 100}%`;
         
-        if (audioPlayer.duration) {
+        const duration = audioPlayer.duration || window.globalPlayingTrack?.metadata?.duration;
+        if (duration) {
             hoverTooltip.style.opacity = '1';
             hoverTooltip.style.left = `${percent * 100}%`;
-            hoverTooltip.textContent = formatTime(percent * audioPlayer.duration);
+            hoverTooltip.textContent = formatTime(percent * duration);
         }
         
         if (e.cancelable) e.preventDefault();
@@ -2025,7 +2003,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     progressBarContainer.addEventListener('touchstart', (e) => {
-        if (!audioPlayer.src || isSeekingDisabled()) return;
+        if (!audioPlayer.src && deviceId === masterDeviceId && !FirebaseRemoteEngine.getControllingDevice()) return;
+        if (isSeekingDisabled()) return;
         isDraggingScrubber = true;
         handleTouchScrub(e);
     }, { passive: false });
@@ -2045,13 +2024,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 let clickX = touch.clientX - rect.left;
                 const percent = Math.max(0, Math.min(1, clickX / rect.width));
                 
-                const targetId = FirebaseRemoteEngine.getControllingDevice();
-                if (targetId) {
-                    if (audioPlayer.duration) {
-                        FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
-                    }
-                } else if (audioPlayer.duration) {
-                    audioPlayer.currentTime = percent * audioPlayer.duration;
+                const targetId = FirebaseRemoteEngine.getControllingDevice() || (deviceId !== masterDeviceId ? masterDeviceId : null);
+                const duration = audioPlayer.duration || window.globalPlayingTrack?.metadata?.duration;
+                if (targetId && duration) {
+                    FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * duration });
+                } else if (duration) {
+                    audioPlayer.currentTime = percent * duration;
                 }
             }
             hoverTooltip.style.opacity = '0';
@@ -2121,13 +2099,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             isDraggingScrubber = false;
             const percent = updateScrubberVisuals(e);
             
-            const targetId = FirebaseRemoteEngine.getControllingDevice();
-            if (targetId) {
-                if (audioPlayer.duration) {
-                    FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
-                }
-            } else if (audioPlayer.duration) {
-                audioPlayer.currentTime = percent * audioPlayer.duration;
+            const targetId = FirebaseRemoteEngine.getControllingDevice() || (deviceId !== masterDeviceId ? masterDeviceId : null);
+            const duration = audioPlayer.duration || window.globalPlayingTrack?.metadata?.duration;
+            if (targetId && duration) {
+                FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * duration });
+            } else if (duration) {
+                audioPlayer.currentTime = percent * duration;
             }
         }
         if (isDraggingVolume) {
