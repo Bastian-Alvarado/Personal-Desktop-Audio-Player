@@ -12,10 +12,15 @@ let masterDeviceId = null;
 let contextSyncInterval = null;
 let isOfflineBreak = false;
 let userQueue = []; // Hoisted: must be global so sync engine (initActiveContextListener) can read/write it
-let slaveTickInterval = null; // Interval for slave scrub bar interpolation
+let slaveRafId = null; // requestAnimationFrame ID for slave scrub bar interpolation
 let activeContextListenerRef = null; // Tracks the active Firebase ref so we can detach it before re-attaching
 let deviceListCache = null;          // { data: {}, timestamp: number } — short-lived cache for the settings device list
 const DEVICE_CACHE_TTL = 30000;      // 30 seconds
+
+let serverTimeOffset = 0;
+function getServerTime() {
+    return Date.now() + serverTimeOffset;
+}
 
 // Global utility: must live here so global-scope sync functions can call it
 function formatTime(seconds) {
@@ -29,6 +34,9 @@ function formatTime(seconds) {
 
 function initOfflineIndicator() {
     if (!window._fbDB) return;
+    window._fbDB.ref('.info/serverTimeOffset').on('value', snap => {
+        serverTimeOffset = snap.val() || 0;
+    });
     window._fbDB.ref('.info/connected').on('value', snap => {
         const online = snap.val() === true;
         document.body.classList.toggle('firebase-offline', !online);
@@ -156,7 +164,7 @@ function initActiveContextListener() {
             
             // Sync Time / Progress Bar
             if (context.timestamp !== undefined) {
-                const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
+                const elapsedSinceUpdate = Math.max(0, (getServerTime() - context.lastUpdate) / 1000);
                 const expectedTime = Math.max(0, context.timestamp + (context.isPaused ? 0 : elapsedSinceUpdate));
                 
                 if (deviceId === masterDeviceId) {
@@ -165,7 +173,7 @@ function initActiveContextListener() {
                         audioPlayer.currentTime = expectedTime;
                     }
                 } else {
-                    // Slaves: snap UI to current expected time, then start a 1s tick to interpolate forward
+                    // Slaves: snap UI to current expected time, then start raf to interpolate forward
                     const duration = context.track?.metadata?.duration || 0;
 
                     // Helper that updates just the scrub bar UI
@@ -185,26 +193,21 @@ function initActiveContextListener() {
                     // Snap immediately to the synced position
                     updateSlaveProgress(expectedTime);
 
-                    // Clear existing tick loop and restart so we interpolate smoothly between heartbeats
-                    if (slaveTickInterval) clearInterval(slaveTickInterval);
+                    if (slaveRafId) cancelAnimationFrame(slaveRafId);
                     if (!context.isPaused) {
-                        // Record when this context snapshot was applied
-                        const tickBase = Date.now();
-                        const tickStart = expectedTime;
-                        slaveTickInterval = setInterval(() => {
+                        const loopFrame = () => {
                             if (deviceId === masterDeviceId) {
-                                // We became master — stop slave ticking
-                                clearInterval(slaveTickInterval);
-                                slaveTickInterval = null;
+                                slaveRafId = null;
                                 return;
                             }
-                            const elapsed = (Date.now() - tickBase) / 1000;
-                            const interpolated = Math.min(tickStart + elapsed, duration || Infinity);
+                            const elapsed = Math.max(0, (getServerTime() - context.lastUpdate) / 1000);
+                            const interpolated = Math.min(context.timestamp + elapsed, duration || Infinity);
                             updateSlaveProgress(interpolated);
-                        }, 1000);
+                            slaveRafId = requestAnimationFrame(loopFrame);
+                        };
+                        slaveRafId = requestAnimationFrame(loopFrame);
                     } else {
-                        // Paused: no need to tick
-                        slaveTickInterval = null;
+                        slaveRafId = null;
                     }
                 }
             }
@@ -253,11 +256,7 @@ function broadcastActiveContext(force = false) {
 
 function startContextSyncInterval() {
     if (contextSyncInterval) clearInterval(contextSyncInterval);
-    contextSyncInterval = setInterval(() => {
-        if (deviceId === masterDeviceId) {
-            broadcastActiveContext();
-        }
-    }, 5000); // Heartbeat sync
+    // 5-second heartbeat removed for Event-Sourcing model
 }
 
 async function takeMasterControl() {
