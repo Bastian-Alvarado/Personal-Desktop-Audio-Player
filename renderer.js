@@ -7,14 +7,11 @@ let appInitialized = false; // Separate guard for the main app init
 let currentUser = null;
 let deviceId = null;
 let allPlaylists = [];
-let isJamHost = false;
-let activeJamHostId = null;
-let jamSyncInterval = null;
-
 // Universal Sync Globals
 let masterDeviceId = null;
 let contextSyncInterval = null;
 let isOfflineBreak = false;
+let userQueue = []; // Hoisted: must be global so sync engine (initActiveContextListener) can read/write it
 
 // ── Firebase Modules (Global Scope for Hoisting) ──────────────────────────────
 
@@ -69,51 +66,7 @@ async function initDevicePresence() {
     }, 3000);
 }
 
-function startJamHostSession() {
-    isJamHost = true;
-    activeJamHostId = deviceId;
-    if (window.globalPlayingTrack) broadcastJamState(window.globalPlayingTrack);
-}
 
-async function broadcastJamState(track) {
-    if (!isJamHost || !currentUser) return;
-    const uid = currentUser.uid;
-    await window._fbDB.ref(`users/${uid}/jam`).set({
-        active: true,
-        hostDeviceId: deviceId,
-        track,
-        startAt: firebase.database.ServerValue.TIMESTAMP,
-        sync: null
-    });
-    startJamSyncInterval(uid);
-}
-
-function startJamSyncInterval(uid) {
-    if (jamSyncInterval) clearInterval(jamSyncInterval);
-    jamSyncInterval = setInterval(() => {
-        const audioPlayer = document.getElementById('audio-player');
-        if (!audioPlayer || audioPlayer.paused) return;
-        window._fbDB.ref(`users/${uid}/jam/sync`).set({
-            currentTime: audioPlayer.currentTime,
-            epoch: firebase.database.ServerValue.TIMESTAMP
-        });
-    }, 3000);
-}
-
-function initJamListener() {
-    if (!currentUser) return;
-    const uid = currentUser.uid;
-    window._fbDB.ref(`users/${uid}/jam`).on('value', async snap => {
-        const jam = snap.val();
-        if (!jam || !jam.active) { activeJamHostId = null; return; }
-        if (jam.hostDeviceId === deviceId) { isJamHost = true; return; }
-        activeJamHostId = jam.hostDeviceId;
-        isJamHost = false;
-        if (jam.track && (!window.globalPlayingTrack || window.globalPlayingTrack.url !== jam.track.url)) {
-            if (typeof playTrack === 'function') playTrack(jam.track, jam.track.metadata?.title, jam.track.metadata?.artist);
-        }
-    });
-}
 
 // ── Universal Sync Engine ────────────────────────────────────────────────────
 
@@ -156,7 +109,8 @@ function initActiveContextListener() {
         // 2. Sync Queue
         if (context.queue) {
             userQueue = context.queue;
-            if (typeof renderQueueView === 'function' && queueView && queueView.classList.contains('active')) {
+            const _queueViewSync = document.getElementById('queue-view');
+            if (typeof renderQueueView === 'function' && _queueViewSync && _queueViewSync.classList.contains('active')) {
                 renderQueueView();
             }
         }
@@ -216,8 +170,9 @@ function initActiveContextListener() {
         }
         
         // Update device list UI to show who is Master
-        if (settingsView && settingsView.classList.contains('active')) {
-            renderSettingsPanel();
+        const _settingsViewSync = document.getElementById('settings-view');
+        if (_settingsViewSync && _settingsViewSync.classList.contains('active')) {
+            if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
         }
     });
 
@@ -476,8 +431,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // Re-render settings if open to update account state
-        if (settingsView && settingsView.classList.contains('active')) {
-            renderSettingsPanel();
+        const _settingsViewAuth = document.getElementById('settings-view');
+        if (_settingsViewAuth && _settingsViewAuth.classList.contains('active')) {
+            if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
         }
     });
 
@@ -490,7 +446,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 2. Initialize Firebase components
         initOfflineIndicator();
         initDevicePresence();
-        initJamListener();
         initActiveContextListener();
         startContextSyncInterval();
         FirebaseRemoteEngine.initCommandListener();
@@ -752,7 +707,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         playlistId: null
     };
     let repeatMode = 0;
-    let globalPlayingTrack = null;
+    // globalPlayingTrack removed: use window.globalPlayingTrack (declared at global scope via window assignment in playTrack)
 
     let activePlaylistId = null;
     let pendingAddTrack = null;
@@ -882,7 +837,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // shakaLibLoaded = false; // KEEP LOADED to avoid redundant script injection
         }
     }
-    let userQueue = [];
+    // userQueue hoisted to global scope (line 13) so the sync engine can access it
     let downloadedTracksMap = new Map(); // url -> localPath
     let pendingDownloads = new Map(); // url -> progress
 
@@ -1100,7 +1055,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     function renderQueueView() {
-        if (!globalPlayingTrack) {
+        if (!window.globalPlayingTrack) {
             queueNowPlaying.innerHTML = '<div class="search-empty-text" style="font-size:14px; opacity:0.5;">Nothing playing</div>';
             queueUserSection.style.display = 'none';
             queueContextList.innerHTML = '<div class="search-empty-text" style="font-size:14px; opacity:0.5;">No context</div>';
@@ -1108,7 +1063,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         
         // Render Now Playing
-        renderTrackList([globalPlayingTrack], queueNowPlaying);
+        renderTrackList([window.globalPlayingTrack], queueNowPlaying);
         
         // Render User Queue
         if (userQueue.length > 0) {
@@ -1364,7 +1319,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 </div>
                 <div style="display: flex; gap: 8px;">
                     ${isMe && !isMaster && dev.online ? `<button class="modal-btn primary-btn take-control-btn" style="padding: 6px 12px; font-size: 11px;">Play on this device</button>` : ''}
-                    ${!isMe && dev.online ? `<button class="modal-btn secondary-btn jam-device-btn" data-id="${id}" style="padding: 6px 10px; font-size: 11px;">Jam Together</button>` : ''}
                 </div>
             `;
             
@@ -1378,15 +1332,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 b.textContent = 'Linking...';
                 b.disabled = true;
                 takeMasterControl();
-            });
-        });
-
-        // Add Jam listeners (Multi-Speaker Mode)
-        listContainer.querySelectorAll('.jam-device-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const targetId = btn.getAttribute('data-id');
-                startJamHostSession();
-                alert(`Jam started! You are now the host. Other devices on your account will join and play audio simultaneously.`);
             });
         });
     }
@@ -1490,17 +1435,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (bottomOfflineBtn) {
         bottomOfflineBtn.addEventListener('click', async () => {
-            if (!globalPlayingTrack) return;
-            const isOffline = downloadedTracksMap.has(globalPlayingTrack.url);
-            const isDownloading = pendingDownloads.has(globalPlayingTrack.url);
+            if (!window.globalPlayingTrack) return;
+            const isOffline = downloadedTracksMap.has(window.globalPlayingTrack.url);
+            const isDownloading = pendingDownloads.has(window.globalPlayingTrack.url);
             
             if (isOffline) {
-                if (confirm(`Remove "${globalPlayingTrack.metadata.title}" from offline storage?`)) {
-                    await removeOfflineTrack(globalPlayingTrack.url);
+                if (confirm(`Remove "${window.globalPlayingTrack.metadata.title}" from offline storage?`)) {
+                    await removeOfflineTrack(window.globalPlayingTrack.url);
                     await syncOfflineState();
                 }
             } else if (!isDownloading) {
-                initiateDownload(globalPlayingTrack);
+                initiateDownload(window.globalPlayingTrack);
             } else {
                 console.log('Already downloading...');
             }
@@ -1538,9 +1483,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             navigator.mediaSession.playbackState = 'playing';
         }
 
-        if (window.electronAPI && globalPlayingTrack) {
-            const title = (globalPlayingTrack.metadata && globalPlayingTrack.metadata.title) ? globalPlayingTrack.metadata.title : globalPlayingTrack.filename;
-            const artist = (globalPlayingTrack.metadata && globalPlayingTrack.metadata.artist) ? globalPlayingTrack.metadata.artist : 'Unknown Artist';
+        if (window.electronAPI && window.globalPlayingTrack) {
+            const title = (window.globalPlayingTrack.metadata && window.globalPlayingTrack.metadata.title) ? window.globalPlayingTrack.metadata.title : window.globalPlayingTrack.filename;
+            const artist = (window.globalPlayingTrack.metadata && window.globalPlayingTrack.metadata.artist) ? window.globalPlayingTrack.metadata.artist : 'Unknown Artist';
             window.electronAPI.updatePresence({ title, artist, startTime: Date.now(), isPaused: false });
         }
 
@@ -1557,9 +1502,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             navigator.mediaSession.playbackState = 'paused';
         }
 
-        if (window.electronAPI && globalPlayingTrack) {
-            const title = (globalPlayingTrack.metadata && globalPlayingTrack.metadata.title) ? globalPlayingTrack.metadata.title : globalPlayingTrack.filename;
-            const artist = (globalPlayingTrack.metadata && globalPlayingTrack.metadata.artist) ? globalPlayingTrack.metadata.artist : 'Unknown Artist';
+        if (window.electronAPI && window.globalPlayingTrack) {
+            const title = (window.globalPlayingTrack.metadata && window.globalPlayingTrack.metadata.title) ? window.globalPlayingTrack.metadata.title : window.globalPlayingTrack.filename;
+            const artist = (window.globalPlayingTrack.metadata && window.globalPlayingTrack.metadata.artist) ? window.globalPlayingTrack.metadata.artist : 'Unknown Artist';
             window.electronAPI.updatePresence({ title, artist, isPaused: true });
         }
 
@@ -1933,8 +1878,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function isSeekingDisabled() {
-        if (!globalPlayingTrack) return false;
-        const url = globalPlayingTrack.url.toLowerCase();
+        if (!window.globalPlayingTrack) return false;
+        const url = window.globalPlayingTrack.url.toLowerCase();
         return url.endsWith('.m4a') || url.endsWith('.aac');
     }
 
@@ -2538,10 +2483,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ── Music Library Initialization ──────────────────
 
     function updatePlayerBarOfflineUI() {
-        if (!globalPlayingTrack || !bottomOfflineBtn) return;
+        if (!window.globalPlayingTrack || !bottomOfflineBtn) return;
         
-        const isOffline = downloadedTracksMap.has(globalPlayingTrack.url);
-        const downloadProgress = pendingDownloads.get(globalPlayingTrack.url);
+        const isOffline = downloadedTracksMap.has(window.globalPlayingTrack.url);
+        const downloadProgress = pendingDownloads.get(window.globalPlayingTrack.url);
         
         if (isOffline) {
             bottomOfflineBtn.classList.add('downloaded');
@@ -2880,7 +2825,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const isUnsupported = isTrackUnsupported(track);
             
             if (isUnsupported) trackItem.classList.add('unsupported-track');
-            if (globalPlayingTrack && globalPlayingTrack.url === track.url) trackItem.classList.add('active');
+            if (window.globalPlayingTrack && window.globalPlayingTrack.url === track.url) trackItem.classList.add('active');
             
             const title = (track.metadata && track.metadata.title) ? track.metadata.title : track.filename;
             const artist = (track.metadata && track.metadata.artist) ? track.metadata.artist : 'Unknown Artist';
@@ -3349,7 +3294,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         lyricsData = [];
         currentLyricIndex = -1;
         plainLyricsCache = '';
-        lyricsTrackUrl = globalPlayingTrack ? globalPlayingTrack.url : '';
+        lyricsTrackUrl = window.globalPlayingTrack ? window.globalPlayingTrack.url : '';
         currentLyricsTitle = title;
         currentLyricsArtist = artist;
         currentLyricsAlbum = album || '';
@@ -4284,10 +4229,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         window.globalPlayingTrack = track;
 
-        // Broadcast to Jam if we are hosting
-        if (typeof isJamHost !== 'undefined' && isJamHost) {
-            broadcastJamState(track);
-        }
 
         // UNIVERSAL SYNC: Update context if we are master
         if (deviceId === masterDeviceId) {
@@ -4716,22 +4657,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Bottom Bar Click Navigation
     bottomArtist.addEventListener('click', () => {
-        if (!globalPlayingTrack) return;
-        const artistName = (globalPlayingTrack.metadata && globalPlayingTrack.metadata.artist) ? globalPlayingTrack.metadata.artist : "Unknown Artist";
+        if (!window.globalPlayingTrack) return;
+        const artistName = (window.globalPlayingTrack.metadata && window.globalPlayingTrack.metadata.artist) ? window.globalPlayingTrack.metadata.artist : "Unknown Artist";
         openArtistView(artistName);
     });
 
     bottomTitle.addEventListener('click', () => {
-        if (!globalPlayingTrack) return;
+        if (!window.globalPlayingTrack) return;
         
-        const albumName = (globalPlayingTrack.metadata && globalPlayingTrack.metadata.album) ? globalPlayingTrack.metadata.album : "Unknown Album";
+        const albumName = (window.globalPlayingTrack.metadata && window.globalPlayingTrack.metadata.album) ? window.globalPlayingTrack.metadata.album : "Unknown Album";
         const albumInfo = albumsData[albumName];
         
         if (albumInfo) {
             openAlbumView(albumInfo);
             
             // Find index of the playing track inside the newly rendered album view
-            const playingIndex = albumInfo.tracks.findIndex(t => t.url === globalPlayingTrack.url);
+            const playingIndex = albumInfo.tracks.findIndex(t => t.url === window.globalPlayingTrack.url);
             
             if (playingIndex !== -1) {
                 const container = document.getElementById('track-list');
