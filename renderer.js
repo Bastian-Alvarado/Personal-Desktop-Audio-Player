@@ -2301,6 +2301,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         playlistBackBtn.addEventListener('click', () => history.back());
     }
 
+    const viewAllDownloadsBtn = document.getElementById('view-all-downloads-btn');
+    const downloadsBackBtn = document.getElementById('downloads-back-btn');
+
+    if (viewAllDownloadsBtn) {
+        viewAllDownloadsBtn.addEventListener('click', () => switchToDownloadsView());
+    }
+    if (downloadsBackBtn) {
+        downloadsBackBtn.addEventListener('click', () => switchToHomeView());
+    }
 
     // Top Navigation
     navHomeBtn.addEventListener('click', () => {
@@ -3962,15 +3971,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const recentArtistList = document.getElementById('recent-artist-list');
         const downloadedMusicList = document.getElementById('downloaded-music-list');
-        const viewAllDownloadsBtn = document.getElementById('view-all-downloads-btn');
-        const downloadsBackBtn = document.getElementById('downloads-back-btn');
-
-        if (viewAllDownloadsBtn) {
-            viewAllDownloadsBtn.addEventListener('click', () => switchToDownloadsView());
-        }
-        if (downloadsBackBtn) {
-            downloadsBackBtn.addEventListener('click', () => switchToHomeView());
-        }
         if (!recentArtistList) return;
         
         let recentEntries = [];
@@ -4125,7 +4125,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             card.addEventListener('click', () => {
                 if (track.metadata && track.metadata.album) {
-                    showSearch(track.metadata.album);
+                    if (searchInput) searchInput.value = track.metadata.album;
+                    switchToSearchView();
+                    renderSearchResults(track.metadata.album);
                 } else {
                     playTrack(track, track.title, track.artist);
                 }
