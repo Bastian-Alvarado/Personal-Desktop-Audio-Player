@@ -13,6 +13,7 @@ let contextSyncInterval = null;
 let isOfflineBreak = false;
 let userQueue = []; // Hoisted: must be global so sync engine (initActiveContextListener) can read/write it
 let slaveRafId = null; // requestAnimationFrame ID for slave scrub bar interpolation
+let isDraggingScrubber = false; // Scrubber state hoisted to prevent TDZ error in requestAnimationFrame
 let activeContextListenerRef = null; // Tracks the active Firebase ref so we can detach it before re-attaching
 let deviceListCache = null;          // { data: {}, timestamp: number } — short-lived cache for the settings device list
 const DEVICE_CACHE_TTL = 30000;      // 30 seconds
@@ -202,7 +203,7 @@ function initActiveContextListener() {
                             }
                             const elapsed = Math.max(0, (getServerTime() - context.lastUpdate) / 1000);
                             const interpolated = Math.min(context.timestamp + elapsed, duration || Infinity);
-                            if (typeof isDraggingScrubber !== 'undefined' && !isDraggingScrubber) {
+                            if (!isDraggingScrubber) {
                                 updateSlaveProgress(interpolated);
                             }
                             slaveRafId = requestAnimationFrame(loopFrame);
@@ -1922,8 +1923,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    let isDraggingScrubber = false;
-
     function updateScrubberVisuals(e) {
         const duration = audioPlayer.duration || window.globalPlayingTrack?.metadata?.duration;
         if (!duration) return 0;
@@ -3419,7 +3418,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             imEl.className = 'lyric-line';
             imEl.textContent = line.text;
             
-            imEl.addEventListener('click', () => { audioPlayer.currentTime = line.time; });
+            imEl.addEventListener('click', () => { 
+                const targetId = FirebaseRemoteEngine.getControllingDevice() || (deviceId !== masterDeviceId ? masterDeviceId : null);
+                if (targetId) {
+                    FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: line.time });
+                } else {
+                    audioPlayer.currentTime = line.time;
+                }
+            });
             
             line.immersiveElement = imEl;
             
