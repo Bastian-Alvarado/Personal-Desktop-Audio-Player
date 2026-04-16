@@ -1092,6 +1092,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function showQueueOverlay() {
+        hideOverlays();
         queueView.classList.remove('hidden');
         queueView.classList.add('active');
         queueBtn.classList.add('active-icon');
@@ -2370,7 +2371,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (mobileQueueBtn) {
         mobileQueueBtn.addEventListener('click', () => {
-            toggleQueueView();
+            if (!queueView.classList.contains('active')) {
+                navigateTo('queue');
+            }
         });
     }
 
