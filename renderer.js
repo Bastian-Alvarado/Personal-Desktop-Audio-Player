@@ -4831,6 +4831,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.playPreviousTrack = playPreviousTrack;
     window.addToQueue = addToQueue;
     window.updateLyricsSync = updateLyricsSync;
+    window.renderQueueView = renderQueueView;
+    window.renderSettingsPanel = renderSettingsPanel;
 
     // END of appInit()
     }
