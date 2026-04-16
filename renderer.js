@@ -115,181 +115,6 @@ function initJamListener() {
     });
 }
 
-// ── Universal Sync Engine ────────────────────────────────────────────────────
-
-function initActiveContextListener() {
-    if (!currentUser || isOfflineBreak) return;
-    const uid = currentUser.uid;
-
-    // Listen for playback context changes (track, queue, paused, master)
-    window._fbDB.ref(`users/${uid}/activeContext`).on('value', async snap => {
-        const context = snap.val();
-        if (!context) return;
-
-        masterDeviceId = context.masterDeviceId;
-        const audioPlayer = document.getElementById('audio-player');
-
-        // AUTO-CLAIM MASTER: If no master exists and we just logged in, we take it
-        if (!masterDeviceId && currentUser) {
-            console.log('[Sync] No master detected. Claiming master control...');
-            takeMasterControl();
-            return;
-        }
-
-        // 1. Sync Track & Metadata (All devices)
-        if (context.track && (!window.globalPlayingTrack || window.globalPlayingTrack.url !== context.track.url)) {
-            console.log('[Sync] New track received from context:', context.track.metadata?.title);
-            
-            if (deviceId !== masterDeviceId) {
-                // If we are slave, we just update UI (no audio load)
-                if (typeof playTrack === 'function') {
-                    playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, true);
-                }
-            } else {
-                // If we are master, we play it fully
-                if (typeof playTrack === 'function') {
-                    playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, false);
-                }
-            }
-        }
-
-        // 2. Sync Queue
-        if (context.queue) {
-            userQueue = context.queue;
-            if (typeof renderQueueView === 'function' && queueView && queueView.classList.contains('active')) {
-                renderQueueView();
-            }
-        }
-
-        // 3. Sync Play/Pause & Time (UI for all, Audio for Master)
-        if (audioPlayer) {
-            // Mirror Play/Pause Icon across all devices
-            if (context.isPaused !== undefined) {
-                const playIconSync = document.querySelector('#play-pause-btn svg path');
-                if (playIconSync) {
-                    if (context.isPaused) {
-                        playIconSync.setAttribute('d', 'M8 5v14l11-7z'); // Play icon
-                    } else {
-                        playIconSync.setAttribute('d', 'M6 19h4V5H6v14zm8-14v14h4V5h-4z'); // Pause icon
-                    }
-                }
-                
-                // Only the MASTER actually controls audio output
-                if (deviceId === masterDeviceId) {
-                    if (context.isPaused !== audioPlayer.paused) {
-                        context.isPaused ? audioPlayer.pause() : audioPlayer.play();
-                    }
-                }
-            }
-            
-            // Sync Time / Progress Bar
-            if (context.timestamp !== undefined) {
-                const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
-                const expectedTime = Math.max(0, context.timestamp + (context.isPaused ? 0 : elapsedSinceUpdate));
-                
-                if (deviceId === masterDeviceId) {
-                    // Master syncs actual audio element
-                    if (Math.abs(audioPlayer.currentTime - expectedTime) > 1.5) {
-                        audioPlayer.currentTime = expectedTime;
-                    }
-                } else {
-                    // Slaves only sync the UI/Lyrics
-                    const duration = context.track?.metadata?.duration || 0;
-                    if (duration > 0) {
-                        const percent = (expectedTime / duration) * 100;
-                        const progressBarInner = document.querySelector('#progress-bar .progress-inner');
-                        const currentTimeEl = document.getElementById('current-time');
-                        if (progressBarInner) progressBarInner.style.width = `${percent}%`;
-                        if (currentTimeEl) currentTimeEl.textContent = formatTime(expectedTime);
-                    }
-                    
-                    // Sync Lyrics for slaves
-                    if (typeof syncLyrics === 'function') syncLyrics(expectedTime);
-                }
-            }
-        }
-
-        if (deviceId !== masterDeviceId && audioPlayer && audioPlayer.src) {
-             // If we were master but no longer are, stop audio
-             audioPlayer.src = '';
-             audioPlayer.load();
-        }
-        
-        // Update device list UI to show who is Master
-        if (settingsView && settingsView.classList.contains('active')) {
-            renderSettingsPanel();
-        }
-    });
-
-    // Handle offline break
-    window.addEventListener('offline', () => {
-        console.log('[Sync] Offline detected. Breaking sync.');
-        isOfflineBreak = true;
-    });
-    window.addEventListener('online', () => {
-        console.log('[Sync] Online detected. Restoring sync.');
-        isOfflineBreak = false;
-        initActiveContextListener();
-    });
-}
-
-function broadcastActiveContext(force = false) {
-    if (!currentUser || deviceId !== masterDeviceId || isOfflineBreak) return;
-    const uid = currentUser.uid;
-    const audioPlayer = document.getElementById('audio-player');
-    
-    const contextData = {
-        track: window.globalPlayingTrack,
-        queue: userQueue,
-        isPaused: audioPlayer ? audioPlayer.paused : true,
-        timestamp: audioPlayer ? audioPlayer.currentTime : 0,
-        masterDeviceId: deviceId,
-        lastUpdate: firebase.database.ServerValue.TIMESTAMP
-    };
-
-    window._fbDB.ref(`users/${uid}/activeContext`).set(contextData);
-}
-
-function startContextSyncInterval() {
-    if (contextSyncInterval) clearInterval(contextSyncInterval);
-    contextSyncInterval = setInterval(() => {
-        if (deviceId === masterDeviceId) {
-            broadcastActiveContext();
-        }
-    }, 5000); // Heartbeat sync
-}
-
-async function takeMasterControl() {
-    if (!currentUser) return;
-    console.log('[Sync] Taking master control of playback...');
-    
-    // 1. Get current context to know where to start
-    const uid = currentUser.uid;
-    const snap = await window._fbDB.ref(`users/${uid}/activeContext`).once('value');
-    const context = snap.val();
-    
-    masterDeviceId = deviceId;
-    
-    if (context && context.track) {
-        const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
-        const startTime = context.timestamp + elapsedSinceUpdate;
-        
-        // Change master first
-        await window._fbDB.ref(`users/${uid}/activeContext/masterDeviceId`).set(deviceId);
-        
-        // Then start playing locally
-        if (typeof playTrack === 'function') {
-            await playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist);
-            const audioPlayer = document.getElementById('audio-player');
-            if (audioPlayer) audioPlayer.currentTime = startTime;
-        }
-    } else {
-        // Just set master if nothing is playing
-        await window._fbDB.ref(`users/${uid}/activeContext/masterDeviceId`).set(deviceId);
-    }
-    
-    renderSettingsPanel();
-}
 
 // Defining as a class/object to survive hoisting vs const assignment
 const FirebaseRemoteEngine = {
@@ -494,6 +319,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         initActiveContextListener();
         startContextSyncInterval();
         FirebaseRemoteEngine.initCommandListener();
+        fetchCloudTracks();
 
         console.log('[Cloud] Firebase services initialized.');
     }
@@ -516,6 +342,49 @@ document.addEventListener('DOMContentLoaded', async () => {
     const allArtistsGrid = document.getElementById('all-artists-grid');
     const backBtn = document.getElementById('back-btn');
     const albumHeroDiv = document.getElementById('album-hero');
+
+    async function fetchCloudTracks() {
+        if (!currentUser || isOfflineBreak) return;
+        const uid = currentUser.uid;
+
+        console.log('[Cloud] Fetching tracks for user:', uid);
+        window._fbDB.ref(`users/${uid}/tracks`).on('value', snap => {
+            const data = snap.val();
+            const tracks = [];
+            if (data) {
+                Object.keys(data).forEach(id => {
+                    tracks.push({
+                        url: `qqdl://${id}`,
+                        localPath: '',
+                        isCloud: true,
+                        cloudId: id,
+                        filename: data[id].title || 'Unknown',
+                        metadata: data[id]
+                    });
+                });
+            }
+            allTracks = tracks;
+            
+            // Rebuild Library Data
+            rebuildLibraryData();
+            
+            // Refresh main views
+            if (homeView.classList.contains('active')) renderHomeGrid();
+            if (allAlbumsView.classList.contains('active')) renderAllAlbumsGrid();
+            if (allArtistsView.classList.contains('active')) renderAllArtistsGrid();
+        });
+    }
+
+    function rebuildLibraryData() {
+        albumsData = {};
+        allTracks.forEach(track => {
+            const albumName = (track.metadata && track.metadata.album) ? track.metadata.album : 'Unknown Album';
+            const album = getAlbumInfo(albumName);
+            album.artist = (track.metadata && track.metadata.artist) ? track.metadata.artist : 'Unknown Artist';
+            if (track.metadata && track.metadata.coverUrl) album.coverUrl = track.metadata.coverUrl;
+            album.tracks.push(track);
+        });
+    }
     
     // Artist Hero Elements
     const artistBackBtn = document.getElementById('artist-back-btn');
@@ -883,6 +752,182 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
     let userQueue = [];
+
+    // ── Universal Sync Engine ────────────────────────────────────────────────────
+
+    function initActiveContextListener() {
+        if (!currentUser || isOfflineBreak) return;
+        const uid = currentUser.uid;
+
+        // Listen for playback context changes (track, queue, paused, master)
+        window._fbDB.ref(`users/${uid}/activeContext`).on('value', async snap => {
+            const context = snap.val();
+            if (!context) return;
+
+            masterDeviceId = context.masterDeviceId;
+            const audioPlayer = document.getElementById('audio-player');
+
+            // AUTO-CLAIM MASTER: If no master exists and we just logged in, we take it
+            if (!masterDeviceId && currentUser) {
+                console.log('[Sync] No master detected. Claiming master control...');
+                takeMasterControl();
+                return;
+            }
+
+            // 1. Sync Track & Metadata (All devices)
+            if (context.track && (!globalPlayingTrack || globalPlayingTrack.url !== context.track.url)) {
+                console.log('[Sync] New track received from context:', context.track.metadata?.title);
+                
+                if (deviceId !== masterDeviceId) {
+                    // If we are slave, we just update UI (no audio load)
+                    if (typeof playTrack === 'function') {
+                        playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, true);
+                    }
+                } else {
+                    // If we are master, we play it fully
+                    if (typeof playTrack === 'function') {
+                        playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, false);
+                    }
+                }
+            }
+
+            // 2. Sync Queue
+            if (context.queue) {
+                userQueue = context.queue;
+                if (typeof renderQueueView === 'function' && queueView && queueView.classList.contains('active')) {
+                    renderQueueView();
+                }
+            }
+
+            // 3. Sync Play/Pause & Time (UI for all, Audio for Master)
+            if (audioPlayer) {
+                // Mirror Play/Pause Icon across all devices
+                if (context.isPaused !== undefined) {
+                    const playIconSync = document.querySelector('#play-pause-btn svg path');
+                    if (playIconSync) {
+                        if (context.isPaused) {
+                            playIconSync.setAttribute('d', 'M8 5v14l11-7z'); // Play icon
+                        } else {
+                            playIconSync.setAttribute('d', 'M6 19h4V5H6v14zm8-14v14h4V5h-4z'); // Pause icon
+                        }
+                    }
+                    
+                    // Only the MASTER actually controls audio output
+                    if (deviceId === masterDeviceId) {
+                        if (context.isPaused !== audioPlayer.paused) {
+                            context.isPaused ? audioPlayer.pause() : audioPlayer.play();
+                        }
+                    }
+                }
+                
+                // Sync Time / Progress Bar
+                if (context.timestamp !== undefined) {
+                    const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
+                    const expectedTime = Math.max(0, context.timestamp + (context.isPaused ? 0 : elapsedSinceUpdate));
+                    
+                    if (deviceId === masterDeviceId) {
+                        // Master syncs actual audio element
+                        if (Math.abs(audioPlayer.currentTime - expectedTime) > 1.5) {
+                            audioPlayer.currentTime = expectedTime;
+                        }
+                    } else {
+                        // Slaves only sync the UI/Lyrics
+                        const duration = context.track?.metadata?.duration || 0;
+                        if (duration > 0) {
+                            const percent = (expectedTime / duration) * 100;
+                            const progressBarInner = document.querySelector('#progress-bar .progress-inner');
+                            const currentTimeEl = document.getElementById('current-time');
+                            if (progressBarInner) progressBarInner.style.width = `${percent}%`;
+                            if (currentTimeEl) currentTimeEl.textContent = formatTime(expectedTime);
+                        }
+                        
+                        // Sync Lyrics for slaves
+                        if (typeof syncLyrics === 'function') syncLyrics(expectedTime);
+                    }
+                }
+            }
+
+            if (deviceId !== masterDeviceId && audioPlayer && audioPlayer.src) {
+                 // If we were master but no longer are, stop audio
+                 audioPlayer.src = '';
+                 audioPlayer.load();
+            }
+            
+            // Update device list UI to show who is Master
+            if (settingsView && settingsView.classList.contains('active')) {
+                renderSettingsPanel();
+            }
+        });
+
+        // Handle offline break
+        window.addEventListener('offline', () => {
+            console.log('[Sync] Offline detected. Breaking sync.');
+            isOfflineBreak = true;
+        });
+        window.addEventListener('online', () => {
+            console.log('[Sync] Online detected. Restoring sync.');
+            isOfflineBreak = false;
+            initActiveContextListener();
+        });
+    }
+
+    function broadcastActiveContext(force = false) {
+        if (!currentUser || deviceId !== masterDeviceId || isOfflineBreak) return;
+        const uid = currentUser.uid;
+        const audioPlayer = document.getElementById('audio-player');
+        
+        const contextData = {
+            track: globalPlayingTrack,
+            queue: userQueue,
+            isPaused: audioPlayer ? audioPlayer.paused : true,
+            timestamp: audioPlayer ? audioPlayer.currentTime : 0,
+            masterDeviceId: deviceId,
+            lastUpdate: firebase.database.ServerValue.TIMESTAMP
+        };
+
+        window._fbDB.ref(`users/${uid}/activeContext`).set(contextData);
+    }
+
+    function startContextSyncInterval() {
+        if (contextSyncInterval) clearInterval(contextSyncInterval);
+        contextSyncInterval = setInterval(() => {
+            if (deviceId === masterDeviceId) {
+                broadcastActiveContext();
+            }
+        }, 5000); // Heartbeat sync
+    }
+
+    async function takeMasterControl() {
+        if (!currentUser) return;
+        console.log('[Sync] Taking master control of playback...');
+        
+        // 1. Get current context to know where to start
+        const uid = currentUser.uid;
+        const snap = await window._fbDB.ref(`users/${uid}/activeContext`).once('value');
+        const context = snap.val();
+        
+        masterDeviceId = deviceId;
+        
+        if (context && context.track) {
+            const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
+            const startTime = context.timestamp + elapsedSinceUpdate;
+            
+            // Change master first
+            await window._fbDB.ref(`users/${uid}/activeContext/masterDeviceId`).set(deviceId);
+            
+            // Then start playing locally
+            if (typeof playTrack === 'function') {
+                await playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist);
+                const audioPlayer = document.getElementById('audio-player');
+                if (audioPlayer) audioPlayer.currentTime = startTime;
+            }
+        } else {
+            // Just set master if nothing is playing
+            await window._fbDB.ref(`users/${uid}/activeContext/masterDeviceId`).set(deviceId);
+        }
+        
+        renderSettingsPanel();
+    }
     let downloadedTracksMap = new Map(); // url -> localPath
     let pendingDownloads = new Map(); // url -> progress
 
@@ -2711,6 +2756,34 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
 
+    function getAlbumInfo(name) {
+        if (!albumsData[name]) {
+            albumsData[name] = {
+                name: name,
+                artist: 'Unknown Artist',
+                coverUrl: '',
+                tracks: []
+            };
+        }
+        return albumsData[name];
+    }
+
+    function renderAllAlbumsGrid() {
+        if (!allAlbumsGrid || !albumsData) return;
+        allAlbumsGrid.innerHTML = '';
+        
+        const sortedAlbums = Object.values(albumsData).sort((a,b) => a.name.localeCompare(b.name));
+        sortedAlbums.forEach(album => {
+            const card = createAlbumCard(album);
+            allAlbumsGrid.appendChild(card);
+        });
+    }
+
+    function renderLibraryView() {
+        renderAllAlbumsGrid();
+        renderAllArtistsGrid();
+    }
+
     function formatHeroDuration(totalSeconds) {
         totalSeconds = Math.round(totalSeconds);
         const hrs = Math.floor(totalSeconds / 3600);
@@ -4282,7 +4355,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (window.electronAPI) {
             window.electronAPI.updatePresence({ title, artist, startTime: Date.now(), isPaused: false });
         }
-        window.globalPlayingTrack = track;
+        globalPlayingTrack = track;
 
         // Broadcast to Jam if we are hosting
         if (typeof isJamHost !== 'undefined' && isJamHost) {
