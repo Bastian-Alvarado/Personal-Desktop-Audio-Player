@@ -12,6 +12,15 @@ let masterDeviceId = null;
 let contextSyncInterval = null;
 let isOfflineBreak = false;
 let userQueue = []; // Hoisted: must be global so sync engine (initActiveContextListener) can read/write it
+let slaveTickInterval = null; // Interval for slave scrub bar interpolation
+
+// Global utility: must live here so global-scope sync functions can call it
+function formatTime(seconds) {
+    if (isNaN(seconds) || seconds < 0) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
 
 // ── Firebase Modules (Global Scope for Hoisting) ──────────────────────────────
 
@@ -147,18 +156,47 @@ function initActiveContextListener() {
                         audioPlayer.currentTime = expectedTime;
                     }
                 } else {
-                    // Slaves only sync the UI/Lyrics
+                    // Slaves: snap UI to current expected time, then start a 1s tick to interpolate forward
                     const duration = context.track?.metadata?.duration || 0;
-                    if (duration > 0) {
-                        const percent = (expectedTime / duration) * 100;
-                        const progressBarInner = document.querySelector('#progress-bar .progress-inner');
+
+                    // Helper that updates just the scrub bar UI
+                    function updateSlaveProgress(time) {
                         const currentTimeEl = document.getElementById('current-time');
-                        if (progressBarInner) progressBarInner.style.width = `${percent}%`;
-                        if (currentTimeEl) currentTimeEl.textContent = formatTime(expectedTime);
+                        const progressFillEl = document.getElementById('progress-fill');
+                        const totalTimeEl = document.getElementById('total-time');
+                        if (currentTimeEl) currentTimeEl.textContent = formatTime(time);
+                        if (totalTimeEl && duration > 0) totalTimeEl.textContent = formatTime(duration);
+                        if (progressFillEl && duration > 0) {
+                            progressFillEl.style.width = `${Math.min(100, (time / duration) * 100)}%`;
+                        }
+                        // Sync lyric highlighting
+                        if (typeof updateLyricsSync === 'function') updateLyricsSync(time);
                     }
-                    
-                    // Sync Lyrics for slaves
-                    if (typeof syncLyrics === 'function') syncLyrics(expectedTime);
+
+                    // Snap immediately to the synced position
+                    updateSlaveProgress(expectedTime);
+
+                    // Clear existing tick loop and restart so we interpolate smoothly between heartbeats
+                    if (slaveTickInterval) clearInterval(slaveTickInterval);
+                    if (!context.isPaused) {
+                        // Record when this context snapshot was applied
+                        const tickBase = Date.now();
+                        const tickStart = expectedTime;
+                        slaveTickInterval = setInterval(() => {
+                            if (deviceId === masterDeviceId) {
+                                // We became master — stop slave ticking
+                                clearInterval(slaveTickInterval);
+                                slaveTickInterval = null;
+                                return;
+                            }
+                            const elapsed = (Date.now() - tickBase) / 1000;
+                            const interpolated = Math.min(tickStart + elapsed, duration || Infinity);
+                            updateSlaveProgress(interpolated);
+                        }, 1000);
+                    } else {
+                        // Paused: no need to tick
+                        slaveTickInterval = null;
+                    }
                 }
             }
         }
