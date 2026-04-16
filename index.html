@@ -318,16 +318,18 @@
                 <h2 class="section-heading" style="font-size: 16px; text-transform: uppercase; font-weight: 800; margin-bottom: 12px; color: var(--accent); flex-shrink: 0;">Now Playing</h2>
                 <div id="queue-now-playing" class="track-list" style="margin-bottom: 24px; flex-shrink: 0;"></div>
                 
-                <div id="queue-user-section" style="display: none; flex-direction: column; flex-shrink: 0; margin-bottom: 24px;">
+                <div id="queue-user-section" style="display: none; flex-direction: column; flex: 1; min-height: 0; margin-bottom: 24px;">
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
                         <h2 class="section-heading" style="font-size: 16px; text-transform: uppercase; font-weight: 800; margin: 0; color: white;">Next in Queue</h2>
                         <button id="queue-clear-btn" style="background: transparent; border: 1px solid rgba(255,255,255,0.2); color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; text-transform: uppercase; font-weight: 700; cursor: pointer; transition: background 0.2s;">Clear</button>
                     </div>
-                    <div id="queue-user-list" class="track-list" style="max-height: 250px; overflow-y: auto;"></div>
+                    <div id="queue-user-list" class="track-list" style="flex: 1; overflow-y: auto;"></div>
                 </div>
                 
-                <h2 class="section-heading" style="font-size: 14px; text-transform: uppercase; font-weight: 700; margin-bottom: 12px; color: var(--text-secondary); flex-shrink: 0;">Next From Source</h2>
-                <div id="queue-context-list" class="track-list" style="flex: 1; overflow-y: auto; padding-right: 8px;"></div>
+                <div id="queue-context-section" style="display: none; flex-direction: column; flex: 1; overflow: hidden;">
+                    <h2 class="section-heading" style="font-size: 14px; text-transform: uppercase; font-weight: 700; margin-bottom: 12px; color: var(--text-secondary); flex-shrink: 0;">Next From Source</h2>
+                    <div id="queue-context-list" class="track-list" style="flex: 1; overflow-y: auto; padding-right: 8px;"></div>
+                </div>
             </div>
         </div>
 

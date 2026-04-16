@@ -185,7 +185,14 @@ function initActiveContextListener() {
                         if (currentTimeEl) currentTimeEl.textContent = formatTime(time);
                         if (totalTimeEl && duration > 0) totalTimeEl.textContent = formatTime(duration);
                         if (progressFillEl && duration > 0) {
-                            progressFillEl.style.width = `${Math.min(100, (time / duration) * 100)}%`;
+                            const percent = (time / duration) * 100;
+                            progressFillEl.style.width = `${Math.min(100, percent)}%`;
+                            
+                            // Update dynamic full-bar progress on mobile
+                            const playerBar = document.querySelector('.player-bar');
+                            if (playerBar && window.innerWidth <= 768) {
+                                playerBar.style.setProperty('--player-progress', `${percent}%`);
+                            }
                         }
                         // Sync lyric highlighting
                         if (typeof window.updateLyricsSync === 'function') window.updateLyricsSync(time);
