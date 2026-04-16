@@ -317,13 +317,14 @@ const FirebaseRemoteEngine = {
         switch (data.type) {
             case 'PLAY_PAUSE': if (audioEl) audioEl.paused ? audioEl.play() : audioEl.pause(); break;
             case 'SEEK': if (audioEl) audioEl.currentTime = data.payload.currentTime; break;
-            case 'NEXT': if (typeof playNextTrack === 'function') playNextTrack(false); break;
-            case 'PREV': if (typeof playPreviousTrack === 'function') playPreviousTrack(); break;
+            case 'NEXT': if (typeof window.playNextTrack === 'function') window.playNextTrack(false); break;
+            case 'PREV': if (typeof window.playPreviousTrack === 'function') window.playPreviousTrack(); break;
             case 'SET_VOLUME': if (audioEl && data.payload.volume !== undefined) audioEl.volume = data.payload.volume; break;
-            case 'PLAY_TRACK': 
+            case 'PLAY_TRACK': {
                 const t = data.payload.track;
-                if (t && typeof playTrack === 'function') playTrack(t, t.metadata?.title, t.metadata?.artist);
+                if (t && typeof window.playTrack === 'function') window.playTrack(t, t.metadata?.title, t.metadata?.artist);
                 break;
+            }
         }
     },
 
@@ -452,8 +453,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         localStorage.setItem('deviceId', deviceId);
     }
 
-    // Initialize the main app logic immediately (Guest Mode)
-    appInit();
+    // Initialize the main app logic and WAIT for it to finish before
+    // registering the auth listener. This guarantees that all functions
+    // defined inside appInit() (renderSettingsPanel, renderQueueView, etc.)
+    // exist before any cloud service tries to call them.
+    await appInit();
 
     window._fbAuth.onAuthStateChanged(async (user) => {
         currentUser = user;
@@ -471,7 +475,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Re-render settings if open to update account state
         const _settingsViewAuth = document.getElementById('settings-view');
         if (_settingsViewAuth && _settingsViewAuth.classList.contains('active')) {
-            if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+            renderSettingsPanel(); // safe: appInit() is guaranteed complete before this runs
         }
     });
 
