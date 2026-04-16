@@ -1259,14 +1259,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             </div>
 
             <div class="settings-section">
-                <div class="settings-section-title">Devices & Handoff</div>
-                <div id="settings-device-list">
-                    <div class="loading">Searching for devices...</div>
-                </div>
-            </div>
-
-            <div class="settings-section">
-                <div class="settings-section-title">My Devices</div>
+                <div class="settings-section-title">Devices &amp; Handoff</div>
                 <div id="settings-device-list" class="settings-device-list">
                     <div class="loading-state">Loading devices...</div>
                 </div>
