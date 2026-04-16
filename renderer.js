@@ -170,7 +170,7 @@ function initActiveContextListener() {
                             progressFillEl.style.width = `${Math.min(100, (time / duration) * 100)}%`;
                         }
                         // Sync lyric highlighting
-                        if (typeof updateLyricsSync === 'function') updateLyricsSync(time);
+                        if (typeof window.updateLyricsSync === 'function') window.updateLyricsSync(time);
                     }
 
                     // Snap immediately to the synced position
@@ -2566,8 +2566,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderRecentSongs();
         renderRecentArtists();
         
-        // Fetch local playlists from localstorage
-        await fetchPlaylists();
+        // Fetching playlists is handled globally during appInit start sequence
     }
     // ───────────────────────────────────────────────────────────
 
@@ -3408,10 +3407,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    function updateLyricsSync() {
-        if (!lyricsData.length || !audioPlayer.src) return;
+    function updateLyricsSync(forceTime) {
+        if (!lyricsData.length) return;
+        if (!audioPlayer.src && forceTime === undefined) return;
         
-        const currentTime = audioPlayer.currentTime;
+        const currentTime = forceTime !== undefined ? forceTime : audioPlayer.currentTime;
         let newIndex = -1;
         
         for (let i = 0; i < lyricsData.length; i++) {
@@ -4805,6 +4805,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.playNextTrack = playNextTrack;
     window.playPreviousTrack = playPreviousTrack;
     window.addToQueue = addToQueue;
+    window.updateLyricsSync = updateLyricsSync;
 
     // END of appInit()
     }
