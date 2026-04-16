@@ -7,14 +7,13 @@ let appInitialized = false; // Separate guard for the main app init
 let currentUser = null;
 let deviceId = null;
 let allPlaylists = [];
-let isJamHost = false;
-let activeJamHostId = null;
-let jamSyncInterval = null;
+let activeJamHostId = null; // Deprecated but kept for UI compatibility if needed
 
 // Universal Sync Globals
 let masterDeviceId = null;
 let contextSyncInterval = null;
 let isOfflineBreak = false;
+let serverTimeOffset = 0; // Displacement between local and server time
 
 // ── Firebase Modules (Global Scope for Hoisting) ──────────────────────────────
 
@@ -29,6 +28,19 @@ function initOfflineIndicator() {
             else bar.classList.remove('hidden');
         }
     });
+}
+
+function initServerTimeOffset() {
+    if (!window._fbDB) return;
+    const offsetRef = window._fbDB.ref('.info/serverTimeOffset');
+    offsetRef.on('value', snap => {
+        serverTimeOffset = snap.val() || 0;
+        console.log(`[Sync] Server time offset calibrated: ${serverTimeOffset}ms`);
+    });
+}
+
+function getServerTime() {
+    return Date.now() + serverTimeOffset;
 }
 
 async function initDevicePresence() {
@@ -69,51 +81,7 @@ async function initDevicePresence() {
     }, 3000);
 }
 
-function startJamHostSession() {
-    isJamHost = true;
-    activeJamHostId = deviceId;
-    if (window.globalPlayingTrack) broadcastJamState(window.globalPlayingTrack);
-}
-
-async function broadcastJamState(track) {
-    if (!isJamHost || !currentUser) return;
-    const uid = currentUser.uid;
-    await window._fbDB.ref(`users/${uid}/jam`).set({
-        active: true,
-        hostDeviceId: deviceId,
-        track,
-        startAt: firebase.database.ServerValue.TIMESTAMP,
-        sync: null
-    });
-    startJamSyncInterval(uid);
-}
-
-function startJamSyncInterval(uid) {
-    if (jamSyncInterval) clearInterval(jamSyncInterval);
-    jamSyncInterval = setInterval(() => {
-        const audioPlayer = document.getElementById('audio-player');
-        if (!audioPlayer || audioPlayer.paused) return;
-        window._fbDB.ref(`users/${uid}/jam/sync`).set({
-            currentTime: audioPlayer.currentTime,
-            epoch: firebase.database.ServerValue.TIMESTAMP
-        });
-    }, 3000);
-}
-
-function initJamListener() {
-    if (!currentUser) return;
-    const uid = currentUser.uid;
-    window._fbDB.ref(`users/${uid}/jam`).on('value', async snap => {
-        const jam = snap.val();
-        if (!jam || !jam.active) { activeJamHostId = null; return; }
-        if (jam.hostDeviceId === deviceId) { isJamHost = true; return; }
-        activeJamHostId = jam.hostDeviceId;
-        isJamHost = false;
-        if (jam.track && (!window.globalPlayingTrack || window.globalPlayingTrack.url !== jam.track.url)) {
-            if (typeof playTrack === 'function') playTrack(jam.track, jam.track.metadata?.title, jam.track.metadata?.artist);
-        }
-    });
-}
+// Jam Sync consolidated into Universal Sync Engine below
 
 
 // Defining as a class/object to survive hoisting vs const assignment
@@ -314,8 +282,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 2. Initialize Firebase components
         initOfflineIndicator();
+        initServerTimeOffset(); // Calibrate clock drift
         initDevicePresence();
-        initJamListener();
         initActiveContextListener();
         startContextSyncInterval();
         FirebaseRemoteEngine.initCommandListener();
@@ -822,7 +790,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 
                 // Sync Time / Progress Bar
                 if (context.timestamp !== undefined) {
-                    const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
+                    const elapsedSinceUpdate = (getServerTime() - context.lastUpdate) / 1000;
                     const expectedTime = Math.max(0, context.timestamp + (context.isPaused ? 0 : elapsedSinceUpdate));
                     
                     if (deviceId === masterDeviceId) {
@@ -834,10 +802,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         // Slaves only sync the UI/Lyrics
                         const duration = context.track?.metadata?.duration || 0;
                         if (duration > 0) {
-                            const percent = (expectedTime / duration) * 100;
-                            const progressBarInner = document.querySelector('#progress-bar .progress-inner');
+                            const percent = Math.min(100, (expectedTime / duration) * 100);
+                            const progressFill = document.getElementById('progress-fill');
                             const currentTimeEl = document.getElementById('current-time');
-                            if (progressBarInner) progressBarInner.style.width = `${percent}%`;
+                            if (progressFill) progressFill.style.width = `${percent}%`;
                             if (currentTimeEl) currentTimeEl.textContent = formatTime(expectedTime);
                         }
                         
@@ -1555,11 +1523,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     playPauseBtn.addEventListener('click', () => {
         // UNIVERSAL SYNC: Slave remote control
         if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
-            const isPaused = !audioPlayer.paused;
-            window._fbDB.ref(`users/${currentUser.uid}/activeContext`).update({
-                isPaused: isPaused,
-                lastUpdate: firebase.database.ServerValue.TIMESTAMP
-            });
+            // SLAVE MODE: Send command to Master
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_PAUSE');
             return;
         }
 
@@ -2078,11 +2043,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         audioPlayer.currentTime = seekTime;
                         broadcastActiveContext(true);
                     } else {
-                        // Slave: Broadcast seek to account
-                        window._fbDB.ref(`users/${currentUser.uid}/activeContext`).update({
-                            timestamp: seekTime,
-                            lastUpdate: firebase.database.ServerValue.TIMESTAMP
-                        });
+                        // Slave: Send command to Master
+                        if (masterDeviceId) {
+                            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SEEK', { currentTime: seekTime });
+                        }
                     }
                 } else {
                     // Legacy/Local
@@ -2169,11 +2133,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     audioPlayer.currentTime = seekTime;
                     broadcastActiveContext(true);
                 } else {
-                    // Slave: Broadcast seek to account
-                    window._fbDB.ref(`users/${currentUser.uid}/activeContext`).update({
-                        timestamp: seekTime,
-                        lastUpdate: firebase.database.ServerValue.TIMESTAMP
-                    });
+                    // Slave: Send command to Master
+                    if (masterDeviceId) {
+                        FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SEEK', { currentTime: seekTime });
+                    }
                 }
             } else {
                 // Legacy / Direct Remote Control
@@ -4374,10 +4337,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         globalPlayingTrack = track;
 
-        // Broadcast to Jam if we are hosting
-        if (typeof isJamHost !== 'undefined' && isJamHost) {
-            broadcastJamState(track);
-        }
+        // UNIVERSAL SYNC: Master broadcasting
 
         // UNIVERSAL SYNC: Update context if we are master
         if (deviceId === masterDeviceId) {
