@@ -1818,12 +1818,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             playerBar.style.transform = 'translateX(0)';
 
             if (Math.abs(deltaX) > 60) {
-                if (deltaX < 0) {
-                    // Swipe Left -> Next
-                    playNextTrack(false);
+                // UNIVERSAL SYNC: Slave remote control (mirrors nextBtn/prevBtn logic)
+                if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+                    FirebaseRemoteEngine.sendCommand(masterDeviceId, deltaX < 0 ? 'NEXT' : 'PREV');
                 } else {
-                    // Swipe Right -> Previous
-                    playPreviousTrack();
+                    if (deltaX < 0) {
+                        // Swipe Left -> Next
+                        playNextTrack(false);
+                    } else {
+                        // Swipe Right -> Previous
+                        playPreviousTrack();
+                    }
                 }
             } else if (Math.abs(deltaX) < 10) {
                 // It was a tap, not a swipe
