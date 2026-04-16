@@ -116,12 +116,10 @@ function initActiveContextListener() {
         }
 
         // 2. Sync Queue
-        if (context.queue) {
-            userQueue = context.queue;
-            const _queueViewSync = document.getElementById('queue-view');
-            if (typeof renderQueueView === 'function' && _queueViewSync && _queueViewSync.classList.contains('active')) {
-                renderQueueView();
-            }
+        userQueue = context.queue || [];
+        const _queueViewSync = document.getElementById('queue-view');
+        if (typeof renderQueueView === 'function' && _queueViewSync && _queueViewSync.classList.contains('active')) {
+            renderQueueView();
         }
 
         // 3. Sync Play/Pause & Time (UI for all, Audio for Master)
@@ -232,15 +230,14 @@ function broadcastActiveContext(force = false) {
     const audioPlayer = document.getElementById('audio-player');
     
     const contextData = {
-        track: window.globalPlayingTrack,
-        queue: userQueue,
+        track: window.globalPlayingTrack || null,
         isPaused: audioPlayer ? audioPlayer.paused : true,
         timestamp: audioPlayer ? audioPlayer.currentTime : 0,
         masterDeviceId: deviceId,
         lastUpdate: firebase.database.ServerValue.TIMESTAMP
     };
 
-    window._fbDB.ref(`users/${uid}/activeContext`).set(contextData);
+    window._fbDB.ref(`users/${uid}/activeContext`).update(contextData);
 }
 
 function startContextSyncInterval() {
@@ -1092,8 +1089,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     queueBtn.addEventListener('click', toggleQueueView);
 
     queueClearBtn.addEventListener('click', () => {
-        userQueue = [];
-        renderQueueView();
+        if (currentUser) {
+            window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).set([]);
+        } else {
+            userQueue = [];
+            renderQueueView();
+        }
     });
 
     function renderQueueView() {
@@ -1139,14 +1140,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function addToQueue(track) {
-        userQueue.push(track);
-        if (queueView.classList.contains('active')) {
-            renderQueueView();
-        }
-        
-        // UNIVERSAL SYNC
-        if (deviceId === masterDeviceId) {
-            broadcastActiveContext(true);
+        if (currentUser) {
+            window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).transaction((currentQueue) => {
+                const q = currentQueue || [];
+                q.push(track);
+                return q;
+            });
+        } else {
+            userQueue.push(track);
+            if (queueView.classList.contains('active')) {
+                renderQueueView();
+            }
         }
     }
 
@@ -1704,7 +1708,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (isFromQueue) {
-            userQueue.shift();
+            if (currentUser) {
+                window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).transaction((currentQueue) => {
+                    const q = currentQueue || [];
+                    q.shift();
+                    return q;
+                });
+            } else {
+                userQueue.shift();
+            }
             const title = (selectedTrack.metadata && selectedTrack.metadata.title) ? selectedTrack.metadata.title : selectedTrack.filename;
             const artist = (selectedTrack.metadata && selectedTrack.metadata.artist) ? selectedTrack.metadata.artist : 'Unknown Artist';
             playTrack(selectedTrack, title, artist, skipAudioInjection ? prefetchedNextTrackData : null);
@@ -3041,11 +3053,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // If clicking a track inside the user queue, it should play that track but clear the user queue up to that point.
                 if (container === queueUserList) {
                      const clickedTrack = tracks[index];
-                     userQueue = userQueue.slice(index + 1); // Remove the clicked track and everything before it
+                     if (currentUser) {
+                         window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).transaction((currentQueue) => {
+                             const q = currentQueue || [];
+                             return q.slice(index + 1);
+                         });
+                     } else {
+                         userQueue = userQueue.slice(index + 1); // Remove the clicked track and everything before it
+                         renderQueueView();
+                     }
                      const title = (clickedTrack.metadata && clickedTrack.metadata.title) ? clickedTrack.metadata.title : clickedTrack.filename;
                      const artist = (clickedTrack.metadata && clickedTrack.metadata.artist) ? clickedTrack.metadata.artist : 'Unknown Artist';
                      playTrack(clickedTrack, title, artist);
-                     renderQueueView();
                      return;
                 }
 
@@ -3054,7 +3073,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                      const clickedTrackUrl = tracks[index].url;
                      const targetIndex = currentPlaylistContext.findIndex(t => t.url === clickedTrackUrl);
                      if (targetIndex !== -1) {
-                         userQueue = []; // Clear user queue if skipping ahead in normal context
+                         if (currentUser) {
+                             window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).set([]);
+                         } else {
+                             userQueue = []; // Clear user queue if skipping ahead in normal context
+                         }
                          commitTrackChange(targetIndex);
                          renderQueueView();
                      }
