@@ -1490,11 +1490,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     playPauseBtn.addEventListener('click', () => {
         // UNIVERSAL SYNC: Slave remote control
         if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
-            const isPaused = !audioPlayer.paused;
-            window._fbDB.ref(`users/${currentUser.uid}/activeContext`).update({
-                isPaused: isPaused,
-                lastUpdate: firebase.database.ServerValue.TIMESTAMP
-            });
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_PAUSE');
             return;
         }
 
