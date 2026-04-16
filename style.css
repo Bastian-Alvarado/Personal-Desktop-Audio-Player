@@ -1386,7 +1386,7 @@ body {
     background: rgba(10, 15, 24, 0.7);
     backdrop-filter: blur(30px);
     border-top: 1px solid rgba(255, 255, 255, 0.1);
-    z-index: 200;
+    z-index: 800; /* Above Queue (600) and Settings (700) */
     align-items: center;
     justify-content: space-around;
     padding-bottom: env(safe-area-inset-bottom);
@@ -1418,6 +1418,16 @@ body {
 
 .mobile-bottom-nav .nav-item:active {
     transform: scale(0.9);
+}
+
+#mobile-queue-btn {
+    display: none;
+}
+
+@media (max-width: 768px) and (orientation: portrait) {
+    #mobile-queue-btn {
+        display: flex;
+    }
 }
 
 .mobile-search-bar {
@@ -1677,6 +1687,7 @@ body {
         inset: 0 !important;
         z-index: 700 !important;
         padding: 12px !important;
+        padding-bottom: 80px !important; /* Space for Bottom Nav */
     }
 
     /* Detail Views (Artist, Album, Playlist) - FULL BLEED HEROES & IMMERSIVE BACKDROP */

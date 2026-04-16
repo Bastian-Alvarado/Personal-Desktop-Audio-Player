@@ -600,8 +600,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Mobile Bottom Nav Elements
     const mobileHomeBtn = document.getElementById('mobile-home-btn');
     const mobileSearchBtn = document.getElementById('mobile-search-btn');
+    const mobileQueueBtn = document.getElementById('mobile-queue-btn');
     const mobileSettingsBtn = document.getElementById('mobile-settings-btn');
-    const mobileNavItems = [mobileHomeBtn, mobileSearchBtn, mobileSettingsBtn];
+    const mobileNavItems = [mobileHomeBtn, mobileSearchBtn, mobileQueueBtn, mobileSettingsBtn];
     const mobileSearchInput = document.getElementById('mobile-search-input');
     
     const trackContextMenu = document.getElementById('track-context-menu');
@@ -2367,6 +2368,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    if (mobileQueueBtn) {
+        mobileQueueBtn.addEventListener('click', () => {
+            toggleQueueView();
+        });
+    }
+
     if (mobileSettingsBtn) {
         mobileSettingsBtn.addEventListener('click', () => {
             if (settingsView.classList.contains('active')) {
@@ -2380,13 +2387,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Update active states on view switches
     const mobileNavObserver = new MutationObserver(() => {
-        if (homeView.classList.contains('active')) updateMobileNavActive(mobileHomeBtn);
+        if (settingsView.classList.contains('active')) updateMobileNavActive(mobileSettingsBtn);
+        else if (queueView.classList.contains('active')) updateMobileNavActive(mobileQueueBtn);
         else if (searchView.classList.contains('active')) updateMobileNavActive(mobileSearchBtn);
-        else if (settingsView.classList.contains('active')) updateMobileNavActive(mobileSettingsBtn);
+        else if (homeView.classList.contains('active')) updateMobileNavActive(mobileHomeBtn);
         else updateMobileNavActive(null);
     });
 
-    [homeView, searchView, settingsView].forEach(view => {
+    [homeView, searchView, queueView, settingsView].forEach(view => {
         if (view) mobileNavObserver.observe(view, { attributes: true, attributeFilter: ['class'] });
     });
 
