@@ -1960,8 +1960,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let isDraggingScrubber = false;
 
+    function getEffectiveDuration() {
+        if (audioPlayer && audioPlayer.duration && !isNaN(audioPlayer.duration) && audioPlayer.duration > 0) {
+            return audioPlayer.duration;
+        }
+        if (globalPlayingTrack && globalPlayingTrack.metadata && globalPlayingTrack.metadata.duration) {
+            return globalPlayingTrack.metadata.duration;
+        }
+        return 0;
+    }
+
     function updateScrubberVisuals(e) {
-        if (!audioPlayer.duration) return;
+        const duration = getEffectiveDuration();
+        if (duration <= 0) return 0;
+
         const rect = progressBarContainer.getBoundingClientRect();
         let clickX = e.clientX - rect.left;
         
@@ -1973,7 +1985,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // update local visuals
         progressFill.style.width = `${percent * 100}%`;
-        currentTimeEl.textContent = formatTime(percent * audioPlayer.duration);
+        currentTimeEl.textContent = formatTime(percent * duration);
         return percent;
     }
 
@@ -1984,41 +1996,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     progressBarContainer.addEventListener('mousedown', (e) => {
-        const uid = currentUser?.uid;
-        const rect = progressBarContainer.getBoundingClientRect();
-        const clickX = e.clientX - rect.left;
-        const percent = Math.max(0, Math.min(1, clickX / rect.width));
-
-        // UNIVERSAL SYNC: If we are slave, we broadcast a seek to the account
-        if (deviceId !== masterDeviceId && uid) {
-            // We use the last known duration from the context or the local track
-            const duration = audioPlayer.duration || (window.globalPlayingTrack?.metadata?.duration);
-            if (duration) {
-                window._fbDB.ref(`users/${uid}/activeContext`).update({
-                    timestamp: percent * duration,
-                    lastUpdate: firebase.database.ServerValue.TIMESTAMP
-                });
-            }
-            return;
-        }
-
-        // LEGACY / DIRECT REMOTE CONTROL
-        const targetId = FirebaseRemoteEngine.getControllingDevice();
-        if (targetId) {
-            if (audioPlayer.duration) {
-                FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
-            }
-            return;
-        }
-
-        if (!audioPlayer.src) return;
+        if (!globalPlayingTrack) return;
         if (isSeekingDisabled()) return;
+        
         isDraggingScrubber = true;
         updateScrubberVisuals(e);
     });
 
     progressBarContainer.addEventListener('mousemove', (e) => {
-        if (!audioPlayer.duration) return;
+        const duration = getEffectiveDuration();
+        if (duration <= 0) return;
         
         const rect = progressBarContainer.getBoundingClientRect();
         let hoverX = e.clientX - rect.left;
@@ -2033,13 +2020,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (isSeekingDisabled()) {
             hoverTooltip.textContent = "Seeking disabled for M4A/AAC files";
         } else {
-            hoverTooltip.textContent = formatTime(percent * audioPlayer.duration);
+            hoverTooltip.textContent = formatTime(percent * duration);
         }
     });
 
     // Touch support for mobile rail
     const handleTouchScrub = (e) => {
-        if (!audioPlayer.src || isSeekingDisabled()) return;
+        const duration = getEffectiveDuration();
+        if (duration <= 0 || isSeekingDisabled()) return;
+        
         const touch = e.touches[0];
         if (!touch) return;
         const rect = progressBarContainer.getBoundingClientRect();
@@ -2051,11 +2040,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const percent = clickX / rect.width;
         progressFill.style.width = `${percent * 100}%`;
         
-        if (audioPlayer.duration) {
-            hoverTooltip.style.opacity = '1';
-            hoverTooltip.style.left = `${percent * 100}%`;
-            hoverTooltip.textContent = formatTime(percent * audioPlayer.duration);
-        }
+        hoverTooltip.style.opacity = '1';
+        hoverTooltip.style.left = `${percent * 100}%`;
+        hoverTooltip.textContent = formatTime(percent * duration);
         
         if (e.cancelable) e.preventDefault();
         e.stopPropagation();
@@ -2079,17 +2066,32 @@ document.addEventListener('DOMContentLoaded', async () => {
             isDraggingScrubber = false;
             const touch = e.changedTouches[0];
             if (touch) {
+                const duration = getEffectiveDuration();
                 const rect = progressBarContainer.getBoundingClientRect();
                 let clickX = touch.clientX - rect.left;
                 const percent = Math.max(0, Math.min(1, clickX / rect.width));
+                const seekTime = percent * duration;
                 
-                const targetId = FirebaseRemoteEngine.getControllingDevice();
-                if (targetId) {
-                    if (audioPlayer.duration) {
-                        FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
+                // UNIVERSAL SYNC: Master or Slave
+                if (typeof currentUser !== 'undefined' && currentUser) {
+                    if (deviceId === masterDeviceId) {
+                        audioPlayer.currentTime = seekTime;
+                        broadcastActiveContext(true);
+                    } else {
+                        // Slave: Broadcast seek to account
+                        window._fbDB.ref(`users/${currentUser.uid}/activeContext`).update({
+                            timestamp: seekTime,
+                            lastUpdate: firebase.database.ServerValue.TIMESTAMP
+                        });
                     }
-                } else if (audioPlayer.duration) {
-                    audioPlayer.currentTime = percent * audioPlayer.duration;
+                } else {
+                    // Legacy/Local
+                    const targetId = FirebaseRemoteEngine.getControllingDevice();
+                    if (targetId && duration > 0) {
+                        FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: seekTime });
+                    } else if (audioPlayer.duration) {
+                        audioPlayer.currentTime = seekTime;
+                    }
                 }
             }
             hoverTooltip.style.opacity = '0';
@@ -2158,14 +2160,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (isDraggingScrubber) {
             isDraggingScrubber = false;
             const percent = updateScrubberVisuals(e);
-            
-            const targetId = FirebaseRemoteEngine.getControllingDevice();
-            if (targetId) {
-                if (audioPlayer.duration) {
-                    FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: percent * audioPlayer.duration });
+            const duration = getEffectiveDuration();
+            const seekTime = percent * duration;
+
+            // UNIVERSAL SYNC: Master or Slave
+            if (typeof currentUser !== 'undefined' && currentUser) {
+                if (deviceId === masterDeviceId) {
+                    audioPlayer.currentTime = seekTime;
+                    broadcastActiveContext(true);
+                } else {
+                    // Slave: Broadcast seek to account
+                    window._fbDB.ref(`users/${currentUser.uid}/activeContext`).update({
+                        timestamp: seekTime,
+                        lastUpdate: firebase.database.ServerValue.TIMESTAMP
+                    });
                 }
-            } else if (audioPlayer.duration) {
-                audioPlayer.currentTime = percent * audioPlayer.duration;
+            } else {
+                // Legacy / Direct Remote Control
+                const targetId = FirebaseRemoteEngine.getControllingDevice();
+                if (targetId && duration > 0) {
+                    FirebaseRemoteEngine.sendCommand(targetId, 'SEEK', { currentTime: seekTime });
+                } else if (audioPlayer.duration) {
+                    audioPlayer.currentTime = seekTime;
+                }
             }
         }
         if (isDraggingVolume) {
