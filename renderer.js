@@ -227,39 +227,6 @@ function initActiveContextListener() {
         if (_settingsViewSync && _settingsViewSync.classList.contains('active')) {
             if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
         }
-
-        // 4. Sync Source Context (Play history/future within album/playlist)
-        if (context.contextTracks) {
-            currentPlaylistContext = context.contextTracks;
-            currentTrackIndex = context.contextIndex !== undefined ? context.contextIndex : -1;
-            repeatMode = context.repeat !== undefined ? context.repeat : 0;
-            isShuffleActive = context.shuffle !== undefined ? context.shuffle : false;
-            unplayedIndices = context.unplayed || [];
-
-            // Update UI toggles
-            if (shuffleBtn) {
-                isShuffleActive ? shuffleBtn.classList.add('toggle-active') : shuffleBtn.classList.remove('toggle-active');
-            }
-            if (repeatBtn && repeatIcon) {
-                // Update repeat icon based on mode
-                if (repeatMode === 0) {
-                    repeatBtn.classList.remove('toggle-active');
-                    repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>`;
-                } else if (repeatMode === 1) {
-                    repeatBtn.classList.add('toggle-active');
-                    repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>`;
-                } else if (repeatMode === 2) {
-                    repeatBtn.classList.add('toggle-active');
-                    repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path><text x="12" y="16.5" font-size="9" font-family="sans-serif" font-weight="bold" stroke="none" fill="currentColor" text-anchor="middle">1</text>`;
-                }
-            }
-
-            // If Queue is open, refresh it now
-            const _queueViewSync = document.getElementById('queue-view');
-            if (typeof renderQueueView === 'function' && _queueViewSync && _queueViewSync.classList.contains('active')) {
-                renderQueueView();
-            }
-        }
     });
 
     // Handle offline break
@@ -283,16 +250,8 @@ function broadcastActiveContext(force = false) {
         track: window.globalPlayingTrack || null,
         isPaused: audioPlayer ? audioPlayer.paused : true,
         timestamp: audioPlayer ? audioPlayer.currentTime : 0,
-        isInfinitePlayActive: isInfinitePlayActive,
         masterDeviceId: deviceId,
-        lastUpdate: firebase.database.ServerValue.TIMESTAMP,
-        
-        // Universal Source Context
-        contextTracks: currentPlaylistContext || [],
-        contextIndex: currentTrackIndex,
-        shuffle: isShuffleActive,
-        unplayed: unplayedIndices || [],
-        repeat: repeatMode
+        lastUpdate: firebase.database.ServerValue.TIMESTAMP
     };
 
     window._fbDB.ref(`users/${uid}/activeContext`).update(contextData);
@@ -371,22 +330,6 @@ const FirebaseRemoteEngine = {
             case 'NEXT': if (typeof window.playNextTrack === 'function') window.playNextTrack(false); break;
             case 'PREV': if (typeof window.playPreviousTrack === 'function') window.playPreviousTrack(); break;
             case 'SET_VOLUME': if (audioEl && data.payload.volume !== undefined) audioEl.volume = data.payload.volume; break;
-            case 'TOGGLE_SHUFFLE': {
-                const btn = document.getElementById('shuffle-btn');
-                if (btn) btn.click(); // Master toggles locally
-                break;
-            }
-            case 'TOGGLE_REPEAT': {
-                const btn = document.getElementById('repeat-btn');
-                if (btn) btn.click(); // Master toggles locally
-                break;
-            }
-            case 'PLAY_INDEX': {
-                if (data.payload.index !== undefined && typeof commitTrackChange === 'function') {
-                    commitTrackChange(data.payload.index);
-                }
-                break;
-            }
             case 'PLAY_TRACK': {
                 const t = data.payload.track;
                 if (t && typeof window.playTrack === 'function') window.playTrack(t, t.metadata?.title, t.metadata?.artist);
@@ -1511,29 +1454,36 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Playback Controls Logic
     repeatBtn.addEventListener('click', () => {
-        if (deviceId !== masterDeviceId) {
-            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'TOGGLE_REPEAT');
-            return;
-        }
         repeatMode = (repeatMode + 1) % 3;
         if (repeatMode === 0) {
             repeatBtn.classList.remove('toggle-active');
-            repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>`;
+            repeatIcon.innerHTML = `
+                <polyline points="17 1 21 5 17 9"></polyline>
+                <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                <polyline points="7 23 3 19 7 15"></polyline>
+                <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+            `;
         } else if (repeatMode === 1) {
             repeatBtn.classList.add('toggle-active');
-            repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>`;
+            repeatIcon.innerHTML = `
+                <polyline points="17 1 21 5 17 9"></polyline>
+                <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                <polyline points="7 23 3 19 7 15"></polyline>
+                <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+            `;
         } else if (repeatMode === 2) {
             repeatBtn.classList.add('toggle-active');
-            repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path><text x="12" y="16.5" font-size="9" font-family="sans-serif" font-weight="bold" stroke="none" fill="currentColor" text-anchor="middle">1</text>`;
+            repeatIcon.innerHTML = `
+                <polyline points="17 1 21 5 17 9"></polyline>
+                <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                <polyline points="7 23 3 19 7 15"></polyline>
+                <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                <text x="12" y="16.5" font-size="9" font-family="sans-serif" font-weight="bold" stroke="none" fill="currentColor" text-anchor="middle">1</text>
+            `;
         }
-        if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
     });
 
     shuffleBtn.addEventListener('click', () => {
-        if (deviceId !== masterDeviceId) {
-            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'TOGGLE_SHUFFLE');
-            return;
-        }
         isShuffleActive = !isShuffleActive;
         if (isShuffleActive) {
             shuffleBtn.classList.add('toggle-active');
@@ -1543,7 +1493,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
             shuffleBtn.classList.remove('toggle-active');
         }
-        if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
     });
 
     if (bottomOfflineBtn) {
@@ -3101,66 +3050,47 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
 
-                const isSlave = deviceId !== masterDeviceId;
-
-                // 1. Queue User Section Logic
+                // If clicking a track inside the user queue, it should play that track but clear the user queue up to that point.
                 if (container === queueUserList) {
                      const clickedTrack = tracks[index];
-                     if (isSlave) {
-                        // Slaves just clear the queue slice via Firebase and tell Master to play
-                        if (currentUser) {
-                            window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).transaction((currentQueue) => {
-                                const q = currentQueue || [];
-                                return q.slice(index + 1);
-                            });
-                        }
-                        FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_TRACK', { track: clickedTrack });
-                     } else {
-                        userQueue = userQueue.slice(index + 1);
-                        renderQueueView();
-                        if (currentUser) {
-                            window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).transaction((currentQueue) => {
-                                const q = currentQueue || [];
-                                return q.slice(index + 1);
-                            });
-                        }
-                        const title = (clickedTrack.metadata && clickedTrack.metadata.title) ? clickedTrack.metadata.title : clickedTrack.filename;
-                        const artist = (clickedTrack.metadata && clickedTrack.metadata.artist) ? clickedTrack.metadata.artist : 'Unknown Artist';
-                        playTrack(clickedTrack, title, artist);
+                     
+                     userQueue = userQueue.slice(index + 1); // Optimistic UI update
+                     renderQueueView();
+
+                     if (currentUser) {
+                         window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).transaction((currentQueue) => {
+                             const q = currentQueue || [];
+                             return q.slice(index + 1);
+                         });
                      }
+                     const title = (clickedTrack.metadata && clickedTrack.metadata.title) ? clickedTrack.metadata.title : clickedTrack.filename;
+                     const artist = (clickedTrack.metadata && clickedTrack.metadata.artist) ? clickedTrack.metadata.artist : 'Unknown Artist';
+                     playTrack(clickedTrack, title, artist);
                      return;
                 }
 
-                // 2. Next From Context (Source) Logic
+                // If clicking a track in the "Next From Context" queue, it skips directly to that index in the main context
                 if (container === queueContextList) {
                      const clickedTrackUrl = tracks[index].url;
                      const targetIndex = currentPlaylistContext.findIndex(t => t.url === clickedTrackUrl);
                      if (targetIndex !== -1) {
-                         if (isSlave) {
-                            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_INDEX', { index: targetIndex });
-                         } else {
-                            userQueue = [];
-                            if (currentUser) window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).set([]);
-                            commitTrackChange(targetIndex);
-                            renderQueueView();
+                         userQueue = []; // Optimistically clear user queue if skipping ahead in normal context
+                         if (currentUser) {
+                             window._fbDB.ref(`users/${currentUser.uid}/activeContext/queue`).set([]);
                          }
+                         commitTrackChange(targetIndex);
+                         renderQueueView();
                      }
                      return;
                 }
 
-                // 3. General Track clicks (Albums, Search, etc.)
-                if (isSlave) {
-                    // If slave clicks a track that isn't the current context, we just push PLAY_TRACK to master
-                    // Master will then decide if it needs to update currentPlaylistContext based on its own logic
-                    FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_TRACK', { track: tracks[index] });
-                } else {
-                    if (currentPlaylistContext !== tracks && container !== queueNowPlaying) {
-                        currentPlaylistContext = tracks;
-                        if (isShuffleActive) unplayedIndices = tracks.map((_, i) => i);
-                    }
-                    if (container !== queueNowPlaying) {
-                        commitTrackChange(index);
-                    }
+                if (currentPlaylistContext !== tracks && container !== queueNowPlaying) {
+                    currentPlaylistContext = tracks;
+                    if (isShuffleActive) unplayedIndices = tracks.map((_, i) => i);
+                }
+                
+                if (container !== queueNowPlaying) {
+                    commitTrackChange(index);
                 }
             });
 
