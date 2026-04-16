@@ -124,6 +124,8 @@ const FirebaseRemoteEngine = {
                 const t = data.payload.track;
                 if (t && typeof playTrack === 'function') playTrack(t, t.metadata?.title, t.metadata?.artist);
                 break;
+            case 'SET_REPEAT': if (typeof syncRepeatUI === 'function') syncRepeatUI(data.payload.mode); break;
+            case 'TOGGLE_SHUFFLE': if (typeof syncShuffleUI === 'function') syncShuffleUI(data.payload.active); break;
         }
     },
 
@@ -757,6 +759,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                         playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, false);
                     }
                 }
+            } else if (context.track && deviceId !== masterDeviceId && (!bottomTitle.textContent || bottomTitle.textContent === 'Unknown Track')) {
+                // FORCE SYNC: Slave has no metadata but track URLs match (e.g. initial join)
+                if (typeof playTrack === 'function') {
+                    playTrack(context.track, context.track.metadata?.title, context.track.metadata?.artist, null, true);
+                }
+            }
+
+            // Sync Shuffle/Repeat States
+            if (context.isShuffleActive !== undefined && context.isShuffleActive !== isShuffleActive) {
+                if (typeof syncShuffleUI === 'function') syncShuffleUI(context.isShuffleActive);
+            }
+            if (context.repeatMode !== undefined && context.repeatMode !== repeatMode) {
+                if (typeof syncRepeatUI === 'function') syncRepeatUI(context.repeatMode);
             }
 
             // 2. Sync Queue
@@ -848,6 +863,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             track: globalPlayingTrack,
             queue: userQueue,
             isPaused: audioPlayer ? audioPlayer.paused : true,
+            isShuffleActive: typeof isShuffleActive !== 'undefined' ? isShuffleActive : false,
+            repeatMode: typeof repeatMode !== 'undefined' ? repeatMode : 0,
             timestamp: audioPlayer ? audioPlayer.currentTime : 0,
             masterDeviceId: deviceId,
             lastUpdate: firebase.database.ServerValue.TIMESTAMP
@@ -880,6 +897,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             const elapsedSinceUpdate = (Date.now() - context.lastUpdate) / 1000;
             const startTime = context.timestamp + elapsedSinceUpdate;
             
+            // Inherit global states if they exist
+            if (context.isShuffleActive !== undefined) syncShuffleUI(context.isShuffleActive);
+            if (context.repeatMode !== undefined) syncRepeatUI(context.repeatMode);
+
             // Change master first
             await window._fbDB.ref(`users/${uid}/activeContext/masterDeviceId`).set(deviceId);
             
@@ -889,9 +910,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const audioPlayer = document.getElementById('audio-player');
                 if (audioPlayer) audioPlayer.currentTime = startTime;
             }
+            
+            // Force immediate broadcast to notify others
+            broadcastActiveContext(true);
         } else {
             // Just set master if nothing is playing
             await window._fbDB.ref(`users/${uid}/activeContext/masterDeviceId`).set(deviceId);
+            broadcastActiveContext(true);
         }
         
         renderSettingsPanel();
@@ -1458,46 +1483,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         hideDependencyModal();
     });
 
-    // Playback Controls Logic
-    repeatBtn.addEventListener('click', () => {
-        repeatMode = (repeatMode + 1) % 3;
-        if (repeatMode === 0) {
+    // Playback Controls UI Sync
+    function syncRepeatUI(mode) {
+        repeatMode = mode;
+        if (mode === 0) {
             repeatBtn.classList.remove('toggle-active');
-            repeatIcon.innerHTML = `
-                <polyline points="17 1 21 5 17 9"></polyline>
-                <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
-                <polyline points="7 23 3 19 7 15"></polyline>
-                <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-            `;
-        } else if (repeatMode === 1) {
+            repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>`;
+        } else if (mode === 1) {
             repeatBtn.classList.add('toggle-active');
-            repeatIcon.innerHTML = `
-                <polyline points="17 1 21 5 17 9"></polyline>
-                <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
-                <polyline points="7 23 3 19 7 15"></polyline>
-                <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-            `;
-        } else if (repeatMode === 2) {
+            repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path>`;
+        } else if (mode === 2) {
             repeatBtn.classList.add('toggle-active');
-            repeatIcon.innerHTML = `
-                <polyline points="17 1 21 5 17 9"></polyline>
-                <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
-                <polyline points="7 23 3 19 7 15"></polyline>
-                <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-                <text x="12" y="16.5" font-size="9" font-family="sans-serif" font-weight="bold" stroke="none" fill="currentColor" text-anchor="middle">1</text>
-            `;
+            repeatIcon.innerHTML = `<polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path><text x="12" y="16.5" font-size="9" font-family="sans-serif" font-weight="bold" stroke="none" fill="currentColor" text-anchor="middle">1</text>`;
         }
-    });
+    }
 
-    shuffleBtn.addEventListener('click', () => {
-        isShuffleActive = !isShuffleActive;
-        if (isShuffleActive) {
+    function syncShuffleUI(active) {
+        isShuffleActive = active;
+        if (active) {
             shuffleBtn.classList.add('toggle-active');
             if (currentPlaylistContext.length > 0) {
                 unplayedIndices = currentPlaylistContext.map((_, i) => i).filter(i => i !== currentTrackIndex);
             }
         } else {
             shuffleBtn.classList.remove('toggle-active');
+            unplayedIndices = [];
+        }
+    }
+
+    // Playback Controls Logic
+    repeatBtn.addEventListener('click', () => {
+        const nextMode = (repeatMode + 1) % 3;
+        if (currentUser && masterDeviceId && deviceId !== masterDeviceId) {
+            // SLAVE: Send command
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SET_REPEAT', { mode: nextMode });
+        } else {
+            // MASTER or LOCAL: Apply and broadcast
+            syncRepeatUI(nextMode);
+            if (deviceId === masterDeviceId) broadcastActiveContext(true);
+        }
+    });
+
+    shuffleBtn.addEventListener('click', () => {
+        const nextActive = !isShuffleActive;
+        if (currentUser && masterDeviceId && deviceId !== masterDeviceId) {
+            // SLAVE: Send command
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'TOGGLE_SHUFFLE', { active: nextActive });
+        } else {
+            // MASTER or LOCAL: Apply and broadcast
+            syncShuffleUI(nextActive);
+            if (deviceId === masterDeviceId) broadcastActiveContext(true);
         }
     });
 
@@ -1522,7 +1557,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     playPauseBtn.addEventListener('click', () => {
         // UNIVERSAL SYNC: Slave remote control
-        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (currentUser && masterDeviceId && deviceId !== masterDeviceId) {
             // SLAVE MODE: Send command to Master
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_PAUSE');
             return;
@@ -2128,15 +2163,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             const seekTime = percent * duration;
 
             // UNIVERSAL SYNC: Master or Slave
-            if (typeof currentUser !== 'undefined' && currentUser) {
-                if (deviceId === masterDeviceId) {
-                    audioPlayer.currentTime = seekTime;
-                    broadcastActiveContext(true);
-                } else {
+            if (currentUser) {
+                if (masterDeviceId && deviceId !== masterDeviceId) {
                     // Slave: Send command to Master
-                    if (masterDeviceId) {
-                        FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SEEK', { currentTime: seekTime });
-                    }
+                    FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SEEK', { currentTime: seekTime });
+                } else {
+                    // Master: Local seek and broadcast
+                    audioPlayer.currentTime = seekTime;
+                    if (deviceId === masterDeviceId) broadcastActiveContext(true);
                 }
             } else {
                 // Legacy / Direct Remote Control
