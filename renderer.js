@@ -13,6 +13,9 @@ let contextSyncInterval = null;
 let isOfflineBreak = false;
 let userQueue = []; // Hoisted: must be global so sync engine (initActiveContextListener) can read/write it
 let slaveTickInterval = null; // Interval for slave scrub bar interpolation
+let activeContextListenerRef = null; // Tracks the active Firebase ref so we can detach it before re-attaching
+let deviceListCache = null;          // { data: {}, timestamp: number } — short-lived cache for the settings device list
+const DEVICE_CACHE_TTL = 30000;      // 30 seconds
 
 // Global utility: must live here so global-scope sync functions can call it
 function formatTime(seconds) {
@@ -83,12 +86,20 @@ function initActiveContextListener() {
     if (!currentUser || isOfflineBreak) return;
     const uid = currentUser.uid;
 
-    // Listen for playback context changes (track, queue, paused, master)
-    window._fbDB.ref(`users/${uid}/activeContext`).on('value', async snap => {
+    // Detach any previous listener to prevent accumulation on reconnect
+    if (activeContextListenerRef) {
+        activeContextListenerRef.off('value');
+        activeContextListenerRef = null;
+    }
+
+    // Store the ref so it can be detached on the next call
+    activeContextListenerRef = window._fbDB.ref(`users/${uid}/activeContext`);
+    activeContextListenerRef.on('value', async snap => {
         const context = snap.val();
         if (!context) return;
 
         masterDeviceId = context.masterDeviceId;
+        deviceListCache = null; // Invalidate device cache on any sync context change
         const audioPlayer = document.getElementById('audio-player');
 
         // AUTO-CLAIM MASTER: If no master exists and we just logged in, we take it
@@ -1298,12 +1309,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
 
-        // Trigger immediate device list render if we have data
+        // Trigger immediate device list render — cache-first to avoid a network round-trip on every open
         const uid = currentUser?.uid;
         if (uid) {
-            window._fbDB.ref(`users/${uid}/devices`).once('value', snap => {
-                renderDeviceList(snap.val());
-            });
+            const now = Date.now();
+            if (deviceListCache && (now - deviceListCache.timestamp < DEVICE_CACHE_TTL)) {
+                // Serve from cache immediately
+                renderDeviceList(deviceListCache.data);
+            } else {
+                // Cache miss or stale — fetch fresh data and cache it
+                window._fbDB.ref(`users/${uid}/devices`).once('value', snap => {
+                    deviceListCache = { data: snap.val(), timestamp: Date.now() };
+                    renderDeviceList(deviceListCache.data);
+                });
+            }
         } else {
             renderDeviceList(null); // Show guest placeholder
         }
@@ -1870,12 +1889,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // Timing and Scrubber Logic
-    function formatTime(seconds) {
-        if (isNaN(seconds)) return "0:00";
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-    }
+    // formatTime() is defined at global scope (line 19) — available here via scope chain
 
     audioPlayer.addEventListener('loadedmetadata', () => {
         totalTimeEl.textContent = formatTime(audioPlayer.duration);
@@ -2572,6 +2586,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Render cached home sections immediately on load
         renderRecentSongs();
         renderRecentArtists();
+        renderAllArtistsGrid(); // Render once at startup — not on every track play
         
         // Fetching playlists is handled globally during appInit start sequence
     }
@@ -4046,8 +4061,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             switchToAllArtistsView();
         });
         recentArtistList.appendChild(allBtnContainer);
-
-        renderAllArtistsGrid();
+        // renderAllArtistsGrid() moved to initializeMusicLibrary — runs once at startup, not on every track play
     }
 
     async function getAllDownloadedTracks() {
