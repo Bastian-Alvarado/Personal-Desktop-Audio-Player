@@ -486,6 +486,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             initializeCloudServices(user);
         } else {
             console.log('[Auth] No user session found. Operating in Guest mode.');
+            // Stop any active listeners
+            if (playlistUnsubscribe) {
+                playlistUnsubscribe();
+                playlistUnsubscribe = null;
+            }
+            allPlaylists = [];
+            renderPlaylistsStrip();
             // Note: we no longer call showAuthOverlay() automatically here
         }
 
@@ -508,6 +515,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         initActiveContextListener();
         startContextSyncInterval();
         FirebaseRemoteEngine.initCommandListener();
+        if (typeof window.fetchPlaylists === 'function') {
+            window.fetchPlaylists();
+        }
 
         console.log('[Cloud] Firebase services initialized.');
     }
@@ -3692,7 +3702,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // If we are currently viewing a playlist, refresh its view to catch updates from other devices
                 if (playlistView && playlistView.classList.contains('active') && activePlaylistId) {
                     const current = allPlaylists.find(p => p.id === activePlaylistId);
-                    if (current) openPlaylistView(current);
+                    if (current) openPlaylistView(current, false); // false = prevent history spam on sync
                     else switchToHomeView(); // playlist was deleted
                 }
             }, err => {
@@ -3862,46 +3872,63 @@ document.addEventListener('DOMContentLoaded', async () => {
         const totalDuration = playlist.tracks.reduce((sum, t) => sum + (t.metadata && t.metadata.duration ? t.metadata.duration : 0), 0);
         const durationStr = totalDuration > 0 ? ` · ${formatHeroDuration(Math.round(totalDuration))}` : '';
 
-        playlistHeroDiv.innerHTML = `
-            ${collage}
-            <div class="album-hero-info">
-                <div class="album-hero-label">Playlist</div>
-                <input class="playlist-title-editable album-hero-title" value="${playlist.name}" spellcheck="false">
-                <div class="album-hero-meta">${playlist.tracks.length} track${playlist.tracks.length !== 1 ? 's' : ''}${durationStr}</div>
-                <div style="display:flex; gap: 12px; align-items: center; margin-top: 24px;">
-                    <button class="icon-button play-btn playlist-play-btn" title="Play All" style="width:56px;height:56px;box-shadow:0 8px 16px rgba(0,0,0,0.4);">
-                        <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"></path></svg>
-                    </button>
-                    <button class="delete-playlist-btn">Delete Playlist</button>
+        // Focus protection: if the user is currently renaming the playlist,
+        // we should NOT re-render the hero section as it would hijack focus.
+        const titleInputActive = document.activeElement && document.activeElement.classList.contains('playlist-title-editable');
+        
+        if (!titleInputActive) {
+            playlistHeroDiv.innerHTML = `
+                ${collage}
+                <div class="album-hero-info">
+                    <div class="album-hero-label">Playlist</div>
+                    <input class="playlist-title-editable album-hero-title" value="${playlist.name}" spellcheck="false">
+                    <div class="album-hero-meta">${playlist.tracks.length} track${playlist.tracks.length !== 1 ? 's' : ''}${durationStr}</div>
+                    <div style="display:flex; gap: 12px; align-items: center; margin-top: 24px;">
+                        <button class="icon-button play-btn playlist-play-btn" title="Play All" style="width:56px;height:56px;box-shadow:0 8px 16px rgba(0,0,0,0.4);">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"></path></svg>
+                        </button>
+                        <button class="delete-playlist-btn">Delete Playlist</button>
+                    </div>
                 </div>
-            </div>
+            `;
 
-            </div>
-        `;
-
-        // Inline rename
-        const titleInput = playlistHeroDiv.querySelector('.playlist-title-editable');
-        titleInput.addEventListener('blur', () => {
-            const newName = titleInput.value.trim();
-            if (newName && newName !== playlist.name) {
-                playlist.name = newName;
-                renamePlaylist(playlist.id, newName);
+            // Inline rename
+            const titleInput = playlistHeroDiv.querySelector('.playlist-title-editable');
+            if (titleInput) {
+                titleInput.addEventListener('blur', () => {
+                    const newName = titleInput.value.trim();
+                    if (newName && newName !== playlist.name) {
+                        playlist.name = newName;
+                        renamePlaylist(playlist.id, newName);
+                    }
+                });
+                titleInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') titleInput.blur(); });
             }
-        });
-        titleInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') titleInput.blur(); });
 
-        // Play all
-        playlistHeroDiv.querySelector('.playlist-play-btn').addEventListener('click', () => {
-            if (playlist.tracks.length === 0) return;
-            currentPlaylistContext = playlist.tracks;
-            if (isShuffleActive) unplayedIndices = playlist.tracks.map((_, i) => i);
-            commitTrackChange(0);
-        });
+            // Play all
+            const playBtn = playlistHeroDiv.querySelector('.playlist-play-btn');
+            if (playBtn) {
+                playBtn.addEventListener('click', () => {
+                    if (playlist.tracks.length === 0) return;
+                    currentPlaylistContext = playlist.tracks;
+                    if (isShuffleActive) unplayedIndices = playlist.tracks.map((_, i) => i);
+                    commitTrackChange(0);
+                });
+            }
 
-        // Delete
-        playlistHeroDiv.querySelector('.delete-playlist-btn').addEventListener('click', () => {
-            if (confirm(`Delete "${playlist.name}"?`)) deletePlaylist(playlist.id);
-        });
+            // Delete
+            const deleteBtn = playlistHeroDiv.querySelector('.delete-playlist-btn');
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', () => {
+                    if (confirm(`Delete "${playlist.name}"?`)) deletePlaylist(playlist.id);
+                });
+            }
+        } else {
+            // If title is active, we only update the meta info (track count/duration) 
+            // without touching the input itself.
+            const metaEl = playlistHeroDiv.querySelector('.album-hero-meta');
+            if (metaEl) metaEl.textContent = `${playlist.tracks.length} track${playlist.tracks.length !== 1 ? 's' : ''}${durationStr}`;
+        }
 
         renderTrackList(playlist.tracks, playlistTrackList, true, playlist.id);
     }
@@ -4840,6 +4867,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.updateLyricsSync = updateLyricsSync;
     window.renderQueueView = renderQueueView;
     window.renderSettingsPanel = renderSettingsPanel;
+    window.fetchPlaylists = fetchPlaylists;
 
     // END of appInit()
     }
