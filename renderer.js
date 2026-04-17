@@ -339,7 +339,15 @@ const FirebaseRemoteEngine = {
             case 'SET_VOLUME': if (audioEl && data.payload.volume !== undefined) audioEl.volume = data.payload.volume; break;
             case 'PLAY_TRACK': {
                 const t = data.payload.track;
-                if (t && typeof window.playTrack === 'function') window.playTrack(t, t.metadata?.title, t.metadata?.artist);
+                const context = data.payload.context;
+                const index = data.payload.index;
+
+                if (context && typeof index === 'number' && typeof window.updateContextAndPlay === 'function') {
+                    // Upgrade: Master adopts the slave's context (e.g. album/playlist)
+                    window.updateContextAndPlay(context, index);
+                } else if (t && typeof window.playTrack === 'function') {
+                    window.playTrack(t, t.metadata?.title, t.metadata?.artist);
+                }
                 break;
             }
         }
@@ -4331,6 +4339,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         window.globalPlayingTrack = track;
 
 
+        // UNIVERSAL SYNC: Slave-to-Master redirection
+        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser && !skipAudio) {
+            console.log('[Sync] Slave Mode: Redirecting "Play" command to Master...');
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_TRACK', {
+                track,
+                context: typeof window.getCurrentContext === 'function' ? window.getCurrentContext() : [],
+                index: typeof window.getCurrentIndex === 'function' ? window.getCurrentIndex() : -1
+            });
+            return;
+        }
+
         // UNIVERSAL SYNC: Update context if we are master
         if (deviceId === masterDeviceId) {
             broadcastActiveContext(true);
@@ -4868,6 +4887,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.renderQueueView = renderQueueView;
     window.renderSettingsPanel = renderSettingsPanel;
     window.fetchPlaylists = fetchPlaylists;
+
+    // State Accessors for Sync Engine
+    window.getCurrentContext = () => currentPlaylistContext;
+    window.getCurrentIndex = () => currentTrackIndex;
+    window.updateContextAndPlay = (context, index) => {
+        currentPlaylistContext = context;
+        commitTrackChange(index);
+    };
 
     // END of appInit()
     }
