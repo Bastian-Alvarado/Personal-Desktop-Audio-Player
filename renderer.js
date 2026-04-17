@@ -12,6 +12,11 @@ let masterDeviceId = null;
 let contextSyncInterval = null;
 let isOfflineBreak = false;
 let userQueue = []; // Hoisted: must be global so sync engine (initActiveContextListener) can read/write it
+let currentPlaylistContext = [];
+let currentTrackIndex = -1;
+let isShuffleActive = false;
+let repeatMode = 0;
+let unplayedIndices = [];
 let slaveRafId = null; // requestAnimationFrame ID for slave scrub bar interpolation
 let isDraggingScrubber = false; // Scrubber state hoisted to prevent TDZ error in requestAnimationFrame
 let activeContextListenerRef = null; // Tracks the active Firebase ref so we can detach it before re-attaching
@@ -800,17 +805,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let allTracks = [];
     let albumsData = {};
-    let currentPlaylistContext = [];
-    let currentTrackIndex = -1;
-    let isShuffleActive = false;
-    let unplayedIndices = [];
     let currentViewInfo = {
         tracks: [],
         container: null,
         isPlaylistView: false,
         playlistId: null
     };
-    let repeatMode = 0;
+    // isShuffleActive, repeatMode, currentPlaylistContext, currentTrackIndex, unplayedIndices moved to global scope for sync engine access
     // globalPlayingTrack removed: use window.globalPlayingTrack (declared at global scope via window assignment in playTrack)
 
     let activePlaylistId = null;
