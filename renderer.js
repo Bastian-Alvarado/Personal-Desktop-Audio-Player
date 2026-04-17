@@ -12,6 +12,8 @@ let masterDeviceId = null;
 let contextSyncInterval = null;
 let isOfflineBreak = false;
 let userQueue = []; // Hoisted: must be global so sync engine (initActiveContextListener) can read/write it
+let isShuffleActive = false; // Hoisted: global so sync engine (broadcastActiveContext) can read it
+let repeatMode = 0;          // Hoisted: global so sync engine (broadcastActiveContext) can read it
 let slaveRafId = null; // requestAnimationFrame ID for slave scrub bar interpolation
 let isDraggingScrubber = false; // Scrubber state hoisted to prevent TDZ error in requestAnimationFrame
 let activeContextListenerRef = null; // Tracks the active Firebase ref so we can detach it before re-attaching
@@ -105,15 +107,22 @@ function initActiveContextListener() {
     activeContextListenerRef = window._fbDB.ref(`users/${uid}/activeContext`);
     activeContextListenerRef.on('value', async snap => {
         const context = snap.val();
-        if (!context) return;
+        if (!context) {
+            // AUTO-CLAIM MASTER: If no syncing context exists at all, claim it.
+            if (!masterDeviceId && currentUser) {
+                console.log('[Sync] No master detected (empty db). Claiming master control...');
+                takeMasterControl();
+            }
+            return;
+        }
 
         masterDeviceId = context.masterDeviceId;
         deviceListCache = null; // Invalidate device cache on any sync context change
         const audioPlayer = document.getElementById('audio-player');
 
-        // AUTO-CLAIM MASTER: If no master exists and we just logged in, we take it
+        // AUTO-CLAIM MASTER: If context exists but master is missing, we take it
         if (!masterDeviceId && currentUser) {
-            console.log('[Sync] No master detected. Claiming master control...');
+            console.log('[Sync] No master detected in context. Claiming master control...');
             takeMasterControl();
             return;
         }
@@ -802,7 +811,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     let albumsData = {};
     let currentPlaylistContext = [];
     let currentTrackIndex = -1;
-    let isShuffleActive = false;
     let unplayedIndices = [];
     let currentViewInfo = {
         tracks: [],
@@ -810,7 +818,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         isPlaylistView: false,
         playlistId: null
     };
-    let repeatMode = 0;
     // globalPlayingTrack removed: use window.globalPlayingTrack (declared at global scope via window assignment in playTrack)
 
     let activePlaylistId = null;
@@ -1506,7 +1513,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Playback Controls Logic
     function setRepeatMode(mode, broadcast = true) {
         // UNIVERSAL SYNC: Slave redirection
-        if (broadcast && typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (broadcast && masterDeviceId && deviceId !== masterDeviceId && currentUser) {
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SET_REPEAT', { mode });
             return;
         }
@@ -1551,7 +1558,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function setShuffleState(active, broadcast = true) {
         // UNIVERSAL SYNC: Slave redirection
-        if (broadcast && typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (broadcast && masterDeviceId && deviceId !== masterDeviceId && currentUser) {
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SET_SHUFFLE', { active });
             return;
         }
@@ -1596,7 +1603,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     playPauseBtn.addEventListener('click', () => {
         // UNIVERSAL SYNC: Slave remote control
-        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (masterDeviceId && deviceId !== masterDeviceId && currentUser) {
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_PAUSE');
             return;
         }
@@ -1865,7 +1872,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     nextBtn.addEventListener('click', () => {
         // UNIVERSAL SYNC: Slave remote control
-        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (masterDeviceId && deviceId !== masterDeviceId && currentUser) {
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'NEXT');
             return;
         }
@@ -1879,7 +1886,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     prevBtn.addEventListener('click', () => {
         // UNIVERSAL SYNC: Slave remote control
-        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (masterDeviceId && deviceId !== masterDeviceId && currentUser) {
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PREV');
             return;
         }
@@ -4395,7 +4402,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
         // UNIVERSAL SYNC: Slave-to-Master redirection
-        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser && !skipAudio) {
+        if (masterDeviceId && deviceId !== masterDeviceId && currentUser && !skipAudio) {
             console.log('[Sync] Slave Mode: Redirecting "Play" command to Master...');
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_TRACK', {
                 track,
