@@ -228,6 +228,14 @@ function initActiveContextListener() {
              audioPlayer.src = '';
              audioPlayer.load();
         }
+
+        // UNIVERSAL SYNC: Sync Shuffle & Repeat State
+        if (context.shuffle !== undefined && typeof window.setShuffleState === 'function') {
+            window.setShuffleState(context.shuffle, false); // false = don't broadcast back
+        }
+        if (context.repeat !== undefined && typeof window.setRepeatMode === 'function') {
+            window.setRepeatMode(context.repeat, false); // false = don't broadcast back
+        }
         
         // Update device list UI to show who is Master
         const _settingsViewSync = document.getElementById('settings-view');
@@ -257,6 +265,8 @@ function broadcastActiveContext(force = false) {
         track: window.globalPlayingTrack || null,
         isPaused: audioPlayer ? audioPlayer.paused : true,
         timestamp: audioPlayer ? audioPlayer.currentTime : 0,
+        shuffle: isShuffleActive,
+        repeat: repeatMode,
         masterDeviceId: deviceId,
         lastUpdate: firebase.database.ServerValue.TIMESTAMP
     };
@@ -347,6 +357,22 @@ const FirebaseRemoteEngine = {
                     window.updateContextAndPlay(context, index);
                 } else if (t && typeof window.playTrack === 'function') {
                     window.playTrack(t, t.metadata?.title, t.metadata?.artist);
+                }
+                break;
+            }
+            case 'SET_SHUFFLE': {
+                if (typeof window.setShuffleState === 'function') {
+                    window.setShuffleState(data.payload.active);
+                    // Master broadcasts immediately after update
+                    if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
+                }
+                break;
+            }
+            case 'SET_REPEAT': {
+                if (typeof window.setRepeatMode === 'function') {
+                    window.setRepeatMode(data.payload.mode);
+                    // Master broadcasts immediately after update
+                    if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
                 }
                 break;
             }
@@ -1478,8 +1504,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // Playback Controls Logic
-    repeatBtn.addEventListener('click', () => {
-        repeatMode = (repeatMode + 1) % 3;
+    function setRepeatMode(mode, broadcast = true) {
+        // UNIVERSAL SYNC: Slave redirection
+        if (broadcast && typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SET_REPEAT', { mode });
+            return;
+        }
+
+        repeatMode = mode;
         if (repeatMode === 0) {
             repeatBtn.classList.remove('toggle-active');
             repeatIcon.innerHTML = `
@@ -1506,10 +1538,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <text x="12" y="16.5" font-size="9" font-family="sans-serif" font-weight="bold" stroke="none" fill="currentColor" text-anchor="middle">1</text>
             `;
         }
+
+        if (broadcast && deviceId === masterDeviceId) {
+            if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
+        }
+    }
+
+    repeatBtn.addEventListener('click', () => {
+        const nextMode = (repeatMode + 1) % 3;
+        setRepeatMode(nextMode);
     });
 
-    shuffleBtn.addEventListener('click', () => {
-        isShuffleActive = !isShuffleActive;
+    function setShuffleState(active, broadcast = true) {
+        // UNIVERSAL SYNC: Slave redirection
+        if (broadcast && typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+            FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SET_SHUFFLE', { active });
+            return;
+        }
+
+        isShuffleActive = active;
         if (isShuffleActive) {
             shuffleBtn.classList.add('toggle-active');
             if (currentPlaylistContext.length > 0) {
@@ -1518,6 +1565,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
             shuffleBtn.classList.remove('toggle-active');
         }
+
+        if (broadcast && deviceId === masterDeviceId) {
+            if (typeof broadcastActiveContext === 'function') broadcastActiveContext(true);
+        }
+    }
+
+    shuffleBtn.addEventListener('click', () => {
+        setShuffleState(!isShuffleActive);
     });
 
     if (bottomOfflineBtn) {
@@ -4895,6 +4950,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentPlaylistContext = context;
         commitTrackChange(index);
     };
+
+    window.setShuffleState = setShuffleState;
+    window.setRepeatMode = setRepeatMode;
 
     // END of appInit()
     }
