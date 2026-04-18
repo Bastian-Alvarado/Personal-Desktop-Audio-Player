@@ -4347,7 +4347,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!manifest) return null;
 
             if (isDash) {
-                // Return the raw base64 or XML for dash-player to handle later
+                // In PWA (browser), DASH is never usable: Shaka fetches segments from
+                // Tidal CDN (sp-ad-fa / lgf.audio.tidal.com) which CORS-blocks github.io
+                // regardless of quality (LOSSLESS DASH has the same problem as HI_RES DASH).
+                // Returning null lets the race fall through to the next quality/API.
+                if (!window.electronAPI) return null;
+                // Return the raw base64 or XML for dash-player to handle later (Electron only)
                 return { url: rawManifest, isDash: true };
             }
 
