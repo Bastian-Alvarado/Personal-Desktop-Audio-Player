@@ -4408,10 +4408,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // NOTE: broadcastActiveContext is intentionally NOT called here.
-        // Broadcasting before audio loads would push isPaused:true to Firebase, which the
-        // sync listener reads back and uses to immediately pause the audio we're about to play.
-        // The 'play' audio event (below) already broadcasts once audio actually starts.
+        // UNIVERSAL SYNC: Immediately stamp the new track into Firebase (master only).
+        // This closes the timing window between the user clicking a track and the 'play'
+        // audio event firing (which can take seconds of buffering). Without this write,
+        // any Firebase update from a slave during that window would deliver a snapshot
+        // with the stale old track, causing the master's listener to switch back to it.
+        // We write ONLY the track field — not isPaused/timestamp — to avoid triggering
+        // the listener's play/pause sync logic with incorrect state.
+        if (currentUser && (!masterDeviceId || deviceId === masterDeviceId) && !skipAudio) {
+            window._fbDB.ref(`users/${currentUser.uid}/activeContext/track`).set(track);
+        }
         prefetchedNextTrackData = null; // Clear prefetch once track starts
 
         let fullAudioUrl = track.url;
