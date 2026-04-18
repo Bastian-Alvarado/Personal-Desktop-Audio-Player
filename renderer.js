@@ -4360,18 +4360,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const tryAPIs = [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl)];
         
-        // Stage 1: Parallel Hi-Res check across all APIs
-        const result = await firstSuccess(tryAPIs.map(api => 
-            attemptResolve(api, track.cloudId).then(res => res ? { api, ...res } : null)
-        ));
+        // In Electron, enforce CORS is not an issue — race HI_RES (DASH) first as it's
+        // highest quality and Electron can load Tidal CDN segments freely.
+        // In the PWA (browser), skip HI_RES entirely: DASH manifests pull segments from
+        // sp-ad-fa.audio.tidal.com which returns no CORS headers for github.io, causing
+        // Shaka to fail. Go straight to LOSSLESS/HIGH which return direct FLAC/AAC URLs.
+        const isElectron = !!window.electronAPI;
 
-        if (result) {
-            qqdlTargetUrl = result.api;
-            return { url: result.url, isDash: result.isDash };
+        if (isElectron) {
+            // Stage 1: Parallel Hi-Res check across all APIs
+            const result = await firstSuccess(tryAPIs.map(api =>
+                attemptResolve(api, track.cloudId).then(res => res ? { api, ...res } : null)
+            ));
+
+            if (result) {
+                qqdlTargetUrl = result.api;
+                return { url: result.url, isDash: result.isDash };
+            }
         }
 
-        // Stage 2: Parallel Quality fallbacks if HI_RES failed on all APIs
-        console.log("HI_RES failed on all APIs. Trying LOSSLESS/HIGH in parallel...");
+        // Stage 2: Parallel Quality fallbacks (always used in PWA, fallback in Electron)
+        if (!isElectron) console.log('[PWA] Skipping HI_RES (DASH) — not CORS-safe. Trying LOSSLESS/HIGH...');
+        else console.log('HI_RES failed on all APIs. Trying LOSSLESS/HIGH in parallel...');
         const fallbackPromises = [];
         for (const api of tryAPIs) {
             fallbackPromises.push(attemptResolve(api, `${track.cloudId}&q=LOSSLESS`).then(res => res ? { api, ...res } : null));

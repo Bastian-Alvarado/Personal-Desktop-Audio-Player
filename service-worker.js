@@ -105,6 +105,19 @@ self.addEventListener('fetch', (e) => {
         return;
     }
 
+    // Pass through Tidal CDN audio segments and qqdl streaming APIs.
+    // These are cross-origin requests that have no CORS headers for github.io.
+    // The service worker intercepting them (and failing) prevents the browser's
+    // native audio element from handling them. With no respondWith(), the browser
+    // handles natively, which is more permissive for <audio> src loading.
+    const isExternalMedia = (
+        e.request.url.includes('audio.tidal.com') ||
+        e.request.url.includes('qqdl.site') ||
+        e.request.url.includes('tidal-uptime') ||
+        e.request.url.includes('firebasedatabase.app')
+    );
+    if (isExternalMedia) return;
+
     e.respondWith(
         fetch(e.request)
             .then(response => {
