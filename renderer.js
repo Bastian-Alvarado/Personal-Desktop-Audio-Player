@@ -19,6 +19,11 @@ let deviceListCache = null;          // { data: {}, timestamp: number } — shor
 const DEVICE_CACHE_TTL = 30000;      // 30 seconds
 
 let serverTimeOffset = 0;
+// Playback state globals — hoisted out of appInit so broadcastActiveContext
+// (a top-level function outside the appInit closure) can read them without
+// hitting a ReferenceError.
+let isShuffleActive = false;
+let repeatMode = 0;
 function getServerTime() {
     return Date.now() + serverTimeOffset;
 }
@@ -802,7 +807,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let albumsData = {};
     let currentPlaylistContext = [];
     let currentTrackIndex = -1;
-    let isShuffleActive = false;
+    isShuffleActive = false; // global (declared at top of file)
+    repeatMode = 0;          // global (declared at top of file)
     let unplayedIndices = [];
     let currentViewInfo = {
         tracks: [],
@@ -810,7 +816,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         isPlaylistView: false,
         playlistId: null
     };
-    let repeatMode = 0;
     // globalPlayingTrack removed: use window.globalPlayingTrack (declared at global scope via window assignment in playTrack)
 
     let activePlaylistId = null;
