@@ -28,6 +28,63 @@ function getServerTime() {
     return Date.now() + serverTimeOffset;
 }
 
+// ─── Firebase Shared Catalog ──────────────────────────────────────────────────
+// A shared Firebase-backed metadata catalog that progressively fills as users
+// explore artists and albums. The first authenticated user to open an
+// artist/album writes metadata to Firebase; all subsequent visitors (including
+// guests) read from Firebase, bypassing the qqdl API entirely.
+//
+// Required addition to Firebase Security Rules:
+//   "catalog": {
+//     ".read": true,
+//     "artists": { "$k": { ".write": "auth !== null" } },
+//     "albums":  { "$k": { ".write": "auth !== null" } }
+//   }
+const CATALOG_TTL_ARTIST = 7  * 24 * 60 * 60 * 1000; // 7 days
+const CATALOG_TTL_ALBUM  = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/** Sanitize a string into a valid Firebase key (no . # $ [ ] /) */
+function normalizeCatalogKey(name) {
+    return String(name).toLowerCase().replace(/[.#$[\]/]/g, '_').slice(0, 100);
+}
+
+/**
+ * Read a catalog entry from Firebase.
+ * Returns the stored object, or null if missing / stale / Firebase unreachable.
+ */
+async function checkFirebaseCatalog(type, id) {
+    if (!window._fbDB) return null;
+    try {
+        const snap = await window._fbDB.ref(`catalog/${type}/${id}`).once('value');
+        if (!snap.exists()) return null;
+        const data = snap.val();
+        const ttl = type === 'artists' ? CATALOG_TTL_ARTIST : CATALOG_TTL_ALBUM;
+        if (!data.lastUpdated || (Date.now() - data.lastUpdated > ttl)) return null;
+        return data;
+    } catch(e) {
+        console.warn('[Catalog] Read error:', e);
+        return null;
+    }
+}
+
+/**
+ * Write a catalog entry to Firebase (authenticated users only).
+ * Skips the write if a fresh entry already exists (prevents stampedes when
+ * many users open the same uncached artist simultaneously).
+ */
+async function writeFirebaseCatalog(type, id, data) {
+    if (!window._fbDB || !currentUser) return; // guests are read-only
+    try {
+        const ttl = type === 'artists' ? CATALOG_TTL_ARTIST : CATALOG_TTL_ALBUM;
+        const snap = await window._fbDB.ref(`catalog/${type}/${id}/lastUpdated`).once('value');
+        if (snap.exists() && (Date.now() - snap.val() < ttl)) return; // already fresh
+        await window._fbDB.ref(`catalog/${type}/${id}`).set({ ...data, lastUpdated: Date.now() });
+        console.log(`[Catalog] ✓ Written ${type}/${id} to Firebase`);
+    } catch(e) {
+        console.warn('[Catalog] Write error:', e);
+    }
+}
+
 // Global utility: must live here so global-scope sync functions can call it
 function formatTime(seconds) {
     if (isNaN(seconds) || seconds < 0) return '0:00';
@@ -2833,40 +2890,83 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        // Use precise /album/?id= endpoint for cloud albums with a known Tidal album ID
+        // Use precise /album/?id= endpoint for cloud albums with a known Tidal album ID.
+        // Load order: localStorage cache → Firebase catalog → qqdl API mirrors.
         if (albumInfo.isCloudGenerated && !albumInfo.isFullyPopulated && albumInfo.albumId) {
-            document.getElementById('track-list').innerHTML = '<div class="loading" style="padding: 24px; color: var(--text-secondary);">Loading full tracklist...</div>';
-            
-            try {
-                const res = await fetch(`${qqdlTargetUrl}/album/?id=${albumInfo.albumId}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    const rawItems = (data && data.data && data.data.items) ? data.data.items : [];
-                    
-                    albumInfo.tracks = rawItems.map(entry => {
-                        const t = entry.item || entry;
-                        return {
-                            url: `qqdl://${t.id}`,
-                            localPath: '',
-                            isCloud: true,
-                            cloudId: t.id,
-                            filename: t.title,
-                            metadata: {
-                                title: t.title,
-                                artist: t.artist ? t.artist.name : albumInfo.artist,
-                                album: albumInfo.name,
-                                duration: t.duration,
-                                trackNumber: t.trackNumber,
-                                coverUrl: albumInfo.coverUrl
+            if (albumInfo._isFetchingTracks) {
+                // Concurrent call already in flight — wait for it then fall through to render
+                await new Promise(r => setTimeout(r, 1500));
+            } else {
+                albumInfo._isFetchingTracks = true;
+                document.getElementById('track-list').innerHTML = '<div class="loading" style="padding: 24px; color: var(--text-secondary);">Loading full tracklist...</div>';
+
+                // 1. Try Firebase catalog first — shared across all users, no API quota used
+                try {
+                    const catalogAlbum = await checkFirebaseCatalog('albums', String(albumInfo.albumId));
+                    if (catalogAlbum && Array.isArray(catalogAlbum.tracks) && catalogAlbum.tracks.length > 0) {
+                        console.log(`[Catalog] Album "${albumInfo.name}" served from Firebase catalog`);
+                        albumInfo.tracks = catalogAlbum.tracks;
+                        albumInfo.isFullyPopulated = true;
+                        albumInfo._isFetchingTracks = false;
+                        updatePersistedCache('albumViewCache', albumInfo.albumId, albumInfo);
+                        // Fall through to render
+                    }
+                } catch(e) { console.warn('[Catalog] Album catalog read failed:', e); }
+
+                // 2. Hit API mirrors only if Firebase didn't have it
+                if (!albumInfo.isFullyPopulated) {
+                    const mirrorOrder = [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl)];
+                    let fetched = false;
+                    for (const mirror of mirrorOrder) {
+                        try {
+                            const res = await fetch(`${mirror}/album/?id=${albumInfo.albumId}`);
+                            if (res.ok) {
+                                const data = await res.json();
+                                const rawItems = (data && data.data && data.data.items) ? data.data.items : [];
+                                albumInfo.tracks = rawItems.map(entry => {
+                                    const t = entry.item || entry;
+                                    return {
+                                        url: `qqdl://${t.id}`,
+                                        localPath: '',
+                                        isCloud: true,
+                                        cloudId: t.id,
+                                        filename: t.title,
+                                        metadata: {
+                                            title: t.title,
+                                            artist: t.artist ? t.artist.name : albumInfo.artist,
+                                            album: albumInfo.name,
+                                            duration: t.duration,
+                                            trackNumber: t.trackNumber,
+                                            coverUrl: albumInfo.coverUrl
+                                        }
+                                    };
+                                }).filter(t => t.cloudId);
+                                albumInfo.isFullyPopulated = true;
+                                updatePersistedCache('albumViewCache', albumInfo.albumId, albumInfo);
+                                fetched = true;
+
+                                // Write to Firebase catalog so all future users skip this API call
+                                writeFirebaseCatalog('albums', String(albumInfo.albumId), {
+                                    name:     albumInfo.name,
+                                    artist:   albumInfo.artist,
+                                    albumId:  albumInfo.albumId,
+                                    coverUrl: albumInfo.coverUrl,
+                                    tracks:   albumInfo.tracks
+                                }).catch(() => {});
+
+                                break; // success — stop trying mirrors
+                            } else if (res.status === 429) {
+                                console.warn(`[Album] ${mirror} rate-limited (429), trying next mirror...`);
+                            } else {
+                                console.warn(`[Album] ${mirror} returned ${res.status}, trying next mirror...`);
                             }
-                        };
-                    }).filter(t => t.cloudId);
-                    
-                    albumInfo.isFullyPopulated = true;
-                    updatePersistedCache('albumViewCache', albumInfo.albumId, albumInfo);
+                        } catch (e) {
+                            console.warn(`[Album] fetch from ${mirror} failed:`, e);
+                        }
+                    }
+                    albumInfo._isFetchingTracks = false;
+                    if (!fetched) console.error('Failed to load album tracks — all mirrors and Firebase exhausted.');
                 }
-            } catch (e) {
-                console.error('Failed to load album tracks via /album/ endpoint:', e);
             }
         }
         
@@ -3220,6 +3320,27 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
+        // 2. Check Firebase Shared Catalog (common pool across all users / guests)
+        try {
+            const catalogKey = normalizeCatalogKey(artistName);
+            const catalogArtist = await checkFirebaseCatalog('artists', catalogKey);
+            if (catalogArtist && catalogArtist.topTracks) {
+                console.log(`[Catalog] Artist "${artistName}" served from Firebase catalog`);
+                const artistData = {
+                    artistTopTracks: catalogArtist.topTracks || [],
+                    finalAlbums: (catalogArtist.albums || []).map(a => ({
+                        ...a, tracks: [], isCloudGenerated: true, isFullyPopulated: false
+                    })),
+                    finalSingles: (catalogArtist.singles || []).map(a => ({
+                        ...a, tracks: [], isCloudGenerated: true, isFullyPopulated: false
+                    }))
+                };
+                updatePersistedCache('artistViewCache', artistName, artistData);
+                renderArtistProfile(artistName, artistData);
+                return;
+            }
+        } catch(e) { console.warn('[Catalog] Artist catalog read failed:', e); }
+
         artistAlbumGrid.innerHTML = '<div class="loading" style="padding: 24px; color: var(--text-secondary);">Fetching discography...</div>';
         artistTrackList.innerHTML = '<div class="loading" style="padding: 24px; color: var(--text-secondary);">Fetching top tracks...</div>';
         if (artistSingleGrid) artistSingleGrid.innerHTML = '';
@@ -3312,6 +3433,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const artistData = { artistTopTracks, finalAlbums, finalSingles };
             updatePersistedCache('artistViewCache', artistName, artistData);
+
+            // Write to Firebase catalog — fire-and-forget so it doesn't block rendering.
+            // Future users (including guests) will load this artist from Firebase
+            // without hitting the qqdl API at all.
+            writeFirebaseCatalog('artists', normalizeCatalogKey(artistName), {
+                name: artistName,
+                artistId,
+                topTracks: artistTopTracks,
+                albums:  finalAlbums.map( ({ albumId, name, artist, coverUrl }) => ({ albumId, name, artist, coverUrl })),
+                singles: finalSingles.map(({ albumId, name, artist, coverUrl }) => ({ albumId, name, artist, coverUrl }))
+            }).catch(() => {});
+
             renderArtistProfile(artistName, artistData);
 
         } catch (e) {
@@ -4389,11 +4522,25 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        // Stage 2: Parallel Quality fallbacks (always used in PWA, fallback in Electron)
+        // Stage 2: Quality fallbacks — primary mirror first, then fan out to others only if needed.
+        // Firing all mirrors simultaneously causes rate-limit bursts (429) when the app
+        // has already pinged every mirror during startup initCloudTarget.
         if (!isElectron) console.log('[PWA] Skipping HI_RES (DASH) — not CORS-safe. Trying LOSSLESS/HIGH...');
         else console.log('HI_RES failed on all APIs. Trying LOSSLESS/HIGH in parallel...');
+
+        // First: try only the already-verified primary mirror for both qualities
+        const primaryFallback = await firstSuccess([
+            attemptResolve(qqdlTargetUrl, `${track.cloudId}&q=LOSSLESS`).then(res => res ? { api: qqdlTargetUrl, ...res } : null),
+            attemptResolve(qqdlTargetUrl, `${track.cloudId}&q=HIGH`).then(res => res ? { api: qqdlTargetUrl, ...res } : null)
+        ]);
+        if (primaryFallback) {
+            return { url: primaryFallback.url, isDash: primaryFallback.isDash };
+        }
+
+        // Second: only fan out to other mirrors if primary failed entirely
+        const otherApis = availableCloudApis.filter(a => a !== qqdlTargetUrl);
         const fallbackPromises = [];
-        for (const api of tryAPIs) {
+        for (const api of otherApis) {
             fallbackPromises.push(attemptResolve(api, `${track.cloudId}&q=LOSSLESS`).then(res => res ? { api, ...res } : null));
             fallbackPromises.push(attemptResolve(api, `${track.cloudId}&q=HIGH`).then(res => res ? { api, ...res } : null));
         }

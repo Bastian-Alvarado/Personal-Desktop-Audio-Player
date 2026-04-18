@@ -159,6 +159,7 @@ function createWindow() {
         minWidth: 900,
         minHeight: 650,
         title: 'SimonRelays Player',
+        icon: path.join(__dirname, 'assets', 'icon.ico'),
         backgroundColor: '#0a0a0f',
         autoHideMenuBar: true,
         frame: false, // Remove native title bar
@@ -181,10 +182,14 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
 
-    // Allow Firebase Auth Google Sign-In popup to open.
-    // Without this, Electron silently blocks signInWithPopup() and nothing happens.
+    // Firebase Auth Google Sign-In popup handler.
+    // Two requirements:
+    //   1. Allow Google / Firebase auth URLs to open as a child BrowserWindow.
+    //   2. contextIsolation MUST be false for the popup so that window.opener
+    //      is non-null — Firebase's auth handler calls window.opener.postMessage()
+    //      to relay credentials back to the main window. With contextIsolation: true,
+    //      window.opener is null and the sign-in promise never resolves.
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        // Only allow Google auth-related URLs to open as a popup
         if (url.startsWith('https://accounts.google.com') || url.startsWith('https://simonrelays.firebaseapp.com')) {
             return {
                 action: 'allow',
@@ -194,12 +199,11 @@ function createWindow() {
                     title: 'Sign in with Google',
                     webPreferences: {
                         nodeIntegration: false,
-                        contextIsolation: true,
+                        contextIsolation: false, // Required: lets window.opener.postMessage work
                     }
                 }
             };
         }
-        // Block all other popups
         return { action: 'deny' };
     });
 

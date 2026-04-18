@@ -1,18 +1,42 @@
 {
   "name": "desktop-audio-player",
   "version": "1.0.0",
-  "description": "",
+  "productName": "SimonRelays",
+  "description": "SimonRelays Desktop Music Player",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "npx -y concurrently \"npx -y http-server . -p 3000\" \"npx -y wait-on http://localhost:3000 && electron .\""
+    "dist": "electron-builder --win",
+    "dist:dir": "electron-builder --win --dir"
+  },
+  "build": {
+    "appId": "com.simonrelays.player",
+    "productName": "SimonRelays",
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SimonRelays"
+    },
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!.git/**",
+      "!*.md"
+    ]
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
-    "electron": "^41.1.1"
+    "electron": "^41.1.1",
+    "electron-builder": "^25.1.8"
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",
