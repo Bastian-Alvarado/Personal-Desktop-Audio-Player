@@ -412,15 +412,15 @@ async function initCloudTarget() {
         const res = await fetch('https://tidal-uptime.jiffy-puffs-1j.workers.dev/');
         if (res.ok) {
             const data = await res.json();
-            if (data && data.api && data.api.length > 0) {
-                availableCloudApis = data.api.map(a => a.url);
+            if (data && data.streaming && data.streaming.length > 0) {
+                availableCloudApis = data.streaming.map(a => a.url);
                 
-                // NEW: Race mirrors for the fastest/working one immediately
-                console.log('Racing QQDL mirrors for initial target...', availableCloudApis);
+                // Race streaming-only mirrors for the fastest/working one immediately
+                console.log('Racing streaming mirrors for initial target...', availableCloudApis);
                 const winner = await firstSuccess(availableCloudApis.map(async (url) => {
                     try {
-                        // Quick search ping to verify API health
-                        const ping = await fetch(`${url}/search/?s=a`);
+                        // Ping the track endpoint — the only one that matters for streaming
+                        const ping = await fetch(`${url}/track/?id=1225577`);
                         if (ping.ok) return url;
                     } catch(e) {}
                     return null;
@@ -1506,7 +1506,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Playback Controls Logic
     function setRepeatMode(mode, broadcast = true) {
         // UNIVERSAL SYNC: Slave redirection
-        if (broadcast && typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (broadcast && masterDeviceId && deviceId !== masterDeviceId && currentUser) {
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SET_REPEAT', { mode });
             return;
         }
@@ -1551,7 +1551,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function setShuffleState(active, broadcast = true) {
         // UNIVERSAL SYNC: Slave redirection
-        if (broadcast && typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (broadcast && masterDeviceId && deviceId !== masterDeviceId && currentUser) {
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'SET_SHUFFLE', { active });
             return;
         }
@@ -1596,7 +1596,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     playPauseBtn.addEventListener('click', () => {
         // UNIVERSAL SYNC: Slave remote control
-        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser) {
+        if (masterDeviceId && deviceId !== masterDeviceId && currentUser) {
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_PAUSE');
             return;
         }
@@ -4395,7 +4395,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
         // UNIVERSAL SYNC: Slave-to-Master redirection
-        if (typeof deviceId !== 'undefined' && typeof masterDeviceId !== 'undefined' && deviceId !== masterDeviceId && currentUser && !skipAudio) {
+        // Guard: masterDeviceId must be a non-null, non-undefined string that differs from this device.
+        // Checking masterDeviceId directly (not typeof) prevents a null masterDeviceId from
+        // being treated as a 'different' master and incorrectly entering slave mode.
+        if (masterDeviceId && deviceId !== masterDeviceId && currentUser && !skipAudio) {
             console.log('[Sync] Slave Mode: Redirecting "Play" command to Master...');
             FirebaseRemoteEngine.sendCommand(masterDeviceId, 'PLAY_TRACK', {
                 track,
@@ -4405,10 +4408,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // UNIVERSAL SYNC: Update context if we are master
-        if (deviceId === masterDeviceId) {
-            broadcastActiveContext(true);
-        }
+        // NOTE: broadcastActiveContext is intentionally NOT called here.
+        // Broadcasting before audio loads would push isPaused:true to Firebase, which the
+        // sync listener reads back and uses to immediately pause the audio we're about to play.
+        // The 'play' audio event (below) already broadcasts once audio actually starts.
         prefetchedNextTrackData = null; // Clear prefetch once track starts
 
         let fullAudioUrl = track.url;
