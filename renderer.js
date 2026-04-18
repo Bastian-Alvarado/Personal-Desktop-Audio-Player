@@ -155,8 +155,12 @@ function initActiveContextListener() {
                     }
                 }
                 
-                // Only the MASTER actually controls audio output
-                if (deviceId === masterDeviceId) {
+                // Only SLAVES sync play/pause from Firebase.
+                // The master is the source of truth for isPaused — it writes to Firebase.
+                // Having Firebase reach back and control the master creates a feedback loop
+                // where stale isPaused:true values (from src-change pause events) cause
+                // the master to pause itself whenever any Firebase update arrives.
+                if (deviceId !== masterDeviceId) {
                     if (context.isPaused !== audioPlayer.paused) {
                         context.isPaused ? audioPlayer.pause() : audioPlayer.play();
                     }
@@ -168,12 +172,8 @@ function initActiveContextListener() {
                 const elapsedSinceUpdate = Math.max(0, (getServerTime() - context.lastUpdate) / 1000);
                 const expectedTime = Math.max(0, context.timestamp + (context.isPaused ? 0 : elapsedSinceUpdate));
                 
-                if (deviceId === masterDeviceId) {
-                    // Master syncs actual audio element
-                    if (Math.abs(audioPlayer.currentTime - expectedTime) > 1.5) {
-                        audioPlayer.currentTime = expectedTime;
-                    }
-                } else {
+                if (deviceId !== masterDeviceId) {
+                    // Slaves only: snap to expected time and start RAF interpolation
                     // Slaves: snap UI to current expected time, then start raf to interpolate forward
                     const duration = context.track?.metadata?.duration || 0;
 
