@@ -560,20 +560,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Capture OAuth Web Redirect logic if we are the web app being targeted
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('auth_redirect') === 'true' && !window.electronAPI) {
-        document.body.innerHTML = '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background:#0a0a0f; color:white; font-family:sans-serif;"><h3>Securely Authenticating...</h3><p style="color:#888;">Please confirm any Google popups.</p></div>';
-        try {
-            const provider = new firebase.auth.GoogleAuthProvider();
-            const result = await window._fbAuth.signInWithPopup(provider);
-            const idToken = result.credential.idToken;
-            const accessToken = result.credential.accessToken || '';
-            window.location.href = `simon-auth://login?idToken=${idToken}&accessToken=${accessToken}`;
+        document.body.innerHTML = `
+            <div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background:#0a0a0f; color:white; font-family:sans-serif;">
+                <h3>Desktop Authentication</h3>
+                <p style="color:#888; margin-bottom: 24px;">Please click the button below to securely login with Google.</p>
+                <button id="manual-auth-btn" style="padding: 12px 24px; font-size: 16px; background-color: #ff6b81; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background 0.2s;">Continue with Google</button>
+            </div>
+        `;
+        
+        document.getElementById('manual-auth-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('manual-auth-btn');
+            btn.textContent = "Authenticating...";
+            btn.disabled = true;
+            btn.style.opacity = '0.7';
             
-            setTimeout(() => {
-                document.body.innerHTML = '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background:#0a0a0f; color:#4ade80; font-family:sans-serif;"><h2>Authentication successful!</h2><p>You can close this tab and return to the app.</p></div>';
-            }, 500);
-        } catch(e) {
-            document.body.innerHTML = `<div style="color:red; padding:20px; font-family:sans-serif;">Auth failed: ${e.message}</div>`;
-        }
+            try {
+                const provider = new firebase.auth.GoogleAuthProvider();
+                const result = await window._fbAuth.signInWithPopup(provider);
+                const idToken = result.credential.idToken;
+                const accessToken = result.credential.accessToken || '';
+                
+                document.body.innerHTML = '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background:#0a0a0f; color:white; font-family:sans-serif;"><h3>Redirecting to App...</h3></div>';
+                
+                window.location.href = `simon-auth://login?idToken=${idToken}&accessToken=${accessToken}`;
+                
+                setTimeout(() => {
+                    document.body.innerHTML = '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background:#0a0a0f; color:#4ade80; font-family:sans-serif;"><h2>Authentication successful!</h2><p style="color:white;">You can safely close this tab and return to the app.</p></div>';
+                }, 1000);
+            } catch(e) {
+                document.body.innerHTML = `<div style="color:#ff6b81; padding:20px; font-family:sans-serif;">Auth failed: ${e.message}</div>`;
+            }
+        });
+        
         return; // Halt regular app execution!
     }
 
