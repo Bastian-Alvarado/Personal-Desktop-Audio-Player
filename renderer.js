@@ -416,6 +416,38 @@ const firstSuccess = (promises) => {
     });
 };
 
+async function smartRaceFetch(path) {
+    const tryAPIs = (availableCloudApis && availableCloudApis.length > 0) 
+        ? [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl).slice(0, 2)] 
+        : [qqdlTargetUrl];
+    
+    // Ensure uniqueness
+    const uniqueAPIs = [...new Set(tryAPIs)];
+
+    const result = await firstSuccess(uniqueAPIs.map(async (api) => {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 7000); // 7s timeout
+            const res = await fetch(`${api}${path}`, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data ? { api, data } : null;
+        } catch (e) {
+            return null;
+        }
+    }));
+
+    if (result) {
+        if (qqdlTargetUrl !== result.api) {
+            console.log(`[Cloud] Mirror fallback: ${qqdlTargetUrl} -> ${result.api}`);
+            qqdlTargetUrl = result.api;
+        }
+        return result.data;
+    }
+    return null;
+}
+
 async function initCloudTarget() {
     try {
         const res = await fetch('https://tidal-uptime.jiffy-puffs-1j.workers.dev/');
@@ -2501,9 +2533,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function renderSearchResults(query) {
         try {
-            const res = await fetch(`${qqdlTargetUrl}/search/?s=${encodeURIComponent(query)}`);
-            if (!res.ok) throw new Error('Search failed');
-            const data = await res.json();
+            const data = await smartRaceFetch(`/search/?s=${encodeURIComponent(query)}`);
+            if (!data) throw new Error('Search failed on all mirrors');
             
             const rawTracks = (data && data.data && data.data.items) ? data.data.items : [];
             const cloudTracks = rawTracks.map(t => {
@@ -2840,9 +2871,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('track-list').innerHTML = '<div class="loading" style="padding: 24px; color: var(--text-secondary);">Loading full tracklist...</div>';
             
             try {
-                const res = await fetch(`${qqdlTargetUrl}/album/?id=${albumInfo.albumId}`);
-                if (res.ok) {
-                    const data = await res.json();
+                const data = await smartRaceFetch(`/album/?id=${albumInfo.albumId}`);
+                if (data) {
                     const rawItems = (data && data.data && data.data.items) ? data.data.items : [];
                     
                     albumInfo.tracks = rawItems.map(entry => {
@@ -3227,9 +3257,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (artistSingleGrid) artistSingleGrid.innerHTML = '';
 
         try {
-            const searchRes = await fetch(`${qqdlTargetUrl}/search/?s=${encodeURIComponent(artistName)}`);
-            if (!searchRes.ok) throw new Error('Search failed');
-            const searchData = await searchRes.json();
+            const searchData = await smartRaceFetch(`/search/?s=${encodeURIComponent(artistName)}`);
+            if (!searchData) throw new Error('Search failed on all mirrors');
             const searchTracks = (searchData && searchData.data && searchData.data.items) ? searchData.data.items : [];
             const matchTrack = searchTracks.find(t => t.artist && t.artist.name.toLowerCase() === artistName.toLowerCase());
             if (!matchTrack) throw new Error('Artist not found in search results');
@@ -3243,8 +3272,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            const [discRes, topTracksFromSearch] = await Promise.all([
-                fetch(`${qqdlTargetUrl}/artist/?f=${artistId}`).catch(() => null),
+            const [discData, topTracksFromSearch] = await Promise.all([
+                smartRaceFetch(`/artist/?f=${artistId}`).catch(() => null),
                 Promise.resolve(searchTracks)
             ]);
 
@@ -3252,8 +3281,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const finalSingles = [];
             let profileTopTracks = [];
 
-            if (discRes && discRes.ok) {
-                const discData = await discRes.json().catch(() => ({}));
+            if (discData) {
                 
                 // 1. Extract Discography
                 const allReleases = (discData && discData.albums && discData.albums.items) ? discData.albums.items : [];
@@ -3359,9 +3387,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     e.stopPropagation();
                     if (albumInfo.tracks.length === 0 && albumInfo.albumId) {
                         try {
-                            const r = await fetch(`${qqdlTargetUrl}/album/?id=${albumInfo.albumId}`);
-                            if (r.ok) {
-                                const d = await r.json();
+                            const d = await smartRaceFetch(`/album/?id=${albumInfo.albumId}`);
+                            if (d) {
                                 const items = (d && d.data && d.data.items) ? d.data.items : [];
                                 albumInfo.tracks = items.map(entry => {
                                     const t = entry.item || entry;
