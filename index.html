@@ -534,6 +534,17 @@
     </nav>
 
     <!-- Firebase Setup -->
+    <script>
+        // Firebase Auth rejects "file:" protocol. In Electron with contextIsolation: true,
+        // preload patches run in a separate world and Firebase can't see them.
+        // We must patch Location.prototype.protocol directly in the page's world before Firebase loads.
+        if (window.location.protocol === 'file:') {
+            Object.defineProperty(Location.prototype, 'protocol', {
+                get: function() { return 'https:'; },
+                set: function() {}
+            });
+        }
+    </script>
     <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-database-compat.js"></script>
