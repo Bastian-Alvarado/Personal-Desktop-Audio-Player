@@ -4480,12 +4480,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!manifest) return null;
 
             if (isDash) {
-                // In PWA (browser), DASH is never usable: Shaka fetches segments from
-                // Tidal CDN (sp-ad-fa / lgf.audio.tidal.com) which CORS-blocks github.io
-                // regardless of quality (LOSSLESS DASH has the same problem as HI_RES DASH).
-                // Returning null lets the race fall through to the next quality/API.
-                if (!window.electronAPI) return null;
-                // Return the raw base64 or XML for dash-player to handle later (Electron only)
                 return { url: rawManifest, isDash: true };
             }
 
@@ -4503,30 +4497,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const tryAPIs = [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl)];
         
-        // In Electron, enforce CORS is not an issue — race HI_RES (DASH) first as it's
-        // highest quality and Electron can load Tidal CDN segments freely.
-        // In the PWA (browser), skip HI_RES entirely: DASH manifests pull segments from
-        // sp-ad-fa.audio.tidal.com which returns no CORS headers for github.io, causing
-        // Shaka to fail. Go straight to LOSSLESS/HIGH which return direct FLAC/AAC URLs.
-        const isElectron = !!window.electronAPI;
+        // Stage 1: Parallel Hi-Res check across all APIs
+        const result = await firstSuccess(tryAPIs.map(api =>
+            attemptResolve(api, track.cloudId).then(res => res ? { api, ...res } : null)
+        ));
 
-        if (isElectron) {
-            // Stage 1: Parallel Hi-Res check across all APIs
-            const result = await firstSuccess(tryAPIs.map(api =>
-                attemptResolve(api, track.cloudId).then(res => res ? { api, ...res } : null)
-            ));
-
-            if (result) {
-                qqdlTargetUrl = result.api;
-                return { url: result.url, isDash: result.isDash };
-            }
+        if (result) {
+            qqdlTargetUrl = result.api;
+            return { url: result.url, isDash: result.isDash };
         }
 
         // Stage 2: Quality fallbacks — primary mirror first, then fan out to others only if needed.
-        // Firing all mirrors simultaneously causes rate-limit bursts (429) when the app
-        // has already pinged every mirror during startup initCloudTarget.
-        if (!isElectron) console.log('[PWA] Skipping HI_RES (DASH) — not CORS-safe. Trying LOSSLESS/HIGH...');
-        else console.log('HI_RES failed on all APIs. Trying LOSSLESS/HIGH in parallel...');
+        console.log('HI_RES failed on all APIs. Trying LOSSLESS/HIGH in parallel...');
 
         // First: try only the already-verified primary mirror for both qualities
         const primaryFallback = await firstSuccess([
@@ -5043,41 +5025,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
     });
-    // ── Mobile Landscape Fullscreen Auto-Manager ──────────────────────────
-    function manageLandscapeFullscreen() {
-        const isMobile = window.innerWidth <= 1024 || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
-        const isLandscape = window.innerWidth > window.innerHeight;
 
-        if (isMobile && isLandscape) {
-            // Enter fullscreen if in landscape and not already
-            if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen().catch(() => {
-                    // Browsers commonly block this if not triggered by direct user interaction
-                    // The fallback click listener below will catch it on their next tap
-                });
-            }
-        } else if (isMobile && !isLandscape) {
-            // Exit fullscreen if rotating back to portrait
-            if (document.fullscreenElement) {
-                document.exitFullscreen().catch(() => {});
-            }
-        }
-    }
-
-    // Check on rotation and screen resize
-    window.addEventListener('resize', manageLandscapeFullscreen);
-    window.addEventListener('orientationchange', () => setTimeout(manageLandscapeFullscreen, 100));
-
-    // Fallback: If the browser blocked the automatic request fullscreen on rotation, 
-    // the next tap anywhere on the screen will trigger it seamlessly.
-    document.addEventListener('click', () => {
-        const isMobile = window.innerWidth <= 1024 || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
-        const isLandscape = window.innerWidth > window.innerHeight;
-        
-        if (isMobile && isLandscape && !document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch(() => {});
-        }
-    });
 
     // ── Initial State Restoration ───────────────────────────────────────────
     try {
