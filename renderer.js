@@ -2,7 +2,6 @@ let qqdlTargetUrl = 'https://wolf.qqdl.site';
 let availableCloudApis = [];
 let isQqdlInitialized = false;
 let appInitialized = false; // Separate guard for the main app init
-const CORS_PROXY_URL = 'https://simon-cors-proxy.alvarado-bastian3a.workers.dev/';
 
 // Firebase Globals
 let currentUser = null;
@@ -935,17 +934,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             shakaLibLoaded = true;
             shaka.polyfill.installAll();
             if (shaka.Player.isBrowserSupported()) {
-                if (!shakaPlayerInstance) {
-                    shakaPlayerInstance = new shaka.Player(audioPlayer);
-                    shakaPlayerInstance.getNetworkingEngine().registerRequestFilter(function(type, request) {
-                        if (!window.electronAPI) {
-                            request.uris = request.uris.map(uri => {
-                                if (uri.startsWith('blob:') || uri.startsWith('offline:') || uri.startsWith('data:')) return uri;
-                                return `${CORS_PROXY_URL}?url=${encodeURIComponent(uri)}`;
-                            });
-                        }
-                    });
-                }
+                if (!shakaPlayerInstance) shakaPlayerInstance = new shaka.Player(audioPlayer);
                 if (!shakaStorageInstance) shakaStorageInstance = new shaka.offline.Storage(shakaPlayerInstance);
                 return true;
             }
@@ -962,15 +951,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     shakaPlayerInstance = new shaka.Player(audioPlayer);
                     shakaStorageInstance = new shaka.offline.Storage(shakaPlayerInstance);
                     
-                    shakaPlayerInstance.getNetworkingEngine().registerRequestFilter(function(type, request) {
-                        if (!window.electronAPI) {
-                            request.uris = request.uris.map(uri => {
-                                if (uri.startsWith('blob:') || uri.startsWith('offline:') || uri.startsWith('data:')) return uri;
-                                return `${CORS_PROXY_URL}?url=${encodeURIComponent(uri)}`;
-                            });
-                        }
-                    });
-
                     shakaPlayerInstance.addEventListener('error', (event) => {
                         console.error('Shaka Player error', event.detail);
                     });
@@ -4461,10 +4441,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function attemptResolve(apiUrl, trackId) {
         try {
-            const target = `${apiUrl}/track/?id=${trackId}`;
-            // Proxy through Cloudflare Worker to sync IP for stream tokens
-            const finalUrl = (!window.electronAPI) ? `${CORS_PROXY_URL}?url=${encodeURIComponent(target)}` : target;
-            const res = await fetch(finalUrl);
+            const res = await fetch(`${apiUrl}/track/?id=${trackId}`);
             if (!res.ok) return null;
             const data = await res.json();
             if (!data) return null;
@@ -4503,7 +4480,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!manifest) return null;
 
             if (isDash) {
-                // Return the raw base64 or XML for dash-player to handle later
+                // In PWA (browser), DASH is never usable: Shaka fetches segments from
+                // Tidal CDN (sp-ad-fa / lgf.audio.tidal.com) which CORS-blocks github.io
+                // regardless of quality (LOSSLESS DASH has the same problem as HI_RES DASH).
+                // Returning null lets the race fall through to the next quality/API.
+                if (!window.electronAPI) return null;
+                // Return the raw base64 or XML for dash-player to handle later (Electron only)
                 return { url: rawManifest, isDash: true };
             }
 
@@ -4521,22 +4503,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const tryAPIs = [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl)];
         
+        // In Electron, enforce CORS is not an issue — race HI_RES (DASH) first as it's
+        // highest quality and Electron can load Tidal CDN segments freely.
+        // In the PWA (browser), skip HI_RES entirely: DASH manifests pull segments from
+        // sp-ad-fa.audio.tidal.com which returns no CORS headers for github.io, causing
+        // Shaka to fail. Go straight to LOSSLESS/HIGH which return direct FLAC/AAC URLs.
         const isElectron = !!window.electronAPI;
 
-        // Stage 1: Parallel Hi-Res check across all APIs
-        const result = await firstSuccess(tryAPIs.map(api =>
-            attemptResolve(api, track.cloudId).then(res => res ? { api, ...res } : null)
-        ));
+        if (isElectron) {
+            // Stage 1: Parallel Hi-Res check across all APIs
+            const result = await firstSuccess(tryAPIs.map(api =>
+                attemptResolve(api, track.cloudId).then(res => res ? { api, ...res } : null)
+            ));
 
-        if (result) {
-            qqdlTargetUrl = result.api;
-            return { url: result.url, isDash: result.isDash };
+            if (result) {
+                qqdlTargetUrl = result.api;
+                return { url: result.url, isDash: result.isDash };
+            }
         }
 
         // Stage 2: Quality fallbacks — primary mirror first, then fan out to others only if needed.
         // Firing all mirrors simultaneously causes rate-limit bursts (429) when the app
         // has already pinged every mirror during startup initCloudTarget.
-        console.log('HI_RES failed on all APIs. Trying LOSSLESS/HIGH in parallel...');
+        if (!isElectron) console.log('[PWA] Skipping HI_RES (DASH) — not CORS-safe. Trying LOSSLESS/HIGH...');
+        else console.log('HI_RES failed on all APIs. Trying LOSSLESS/HIGH in parallel...');
 
         // First: try only the already-verified primary mirror for both qualities
         const primaryFallback = await firstSuccess([
@@ -4635,15 +4625,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 dashActive = false;
                             }
                             fullAudioUrl = resolved.url || track.url;
-                            if (fullAudioUrl && !window.electronAPI) {
-                                fullAudioUrl = `${CORS_PROXY_URL}?url=${encodeURIComponent(fullAudioUrl)}`;
-                            }
                         }
                     } else if (resolved) {
                         fullAudioUrl = resolved; 
-                        if (fullAudioUrl && !window.electronAPI) {
-                            fullAudioUrl = `${CORS_PROXY_URL}?url=${encodeURIComponent(fullAudioUrl)}`;
-                        }
                     } else {
                         alert("Failed to resolve cloud stream.");
                         return;
