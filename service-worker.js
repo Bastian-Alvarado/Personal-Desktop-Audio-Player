@@ -1,16 +1,16 @@
-const CACHE_NAME = 'simonrelays-desktop-pwa-v6';
-const DB_NAME = 'SimonOffline'; 
+const CACHE_NAME = 'simonrelays-desktop-pwa-v7';
+const DB_NAME = 'SimonOffline';
 const STORE_NAME = 'tracks';
 
 const ASSETS = [
-  './',
-  './index.html',
-  './style.css',
-  './renderer.js',
-  './manifest.json',
-  './icon.svg',
-  './icon-192.png',
-  './icon-512.png'
+    './',
+    './index.html',
+    './style.css',
+    './renderer.js',
+    './manifest.json',
+    './icon.svg',
+    './icon-192.png',
+    './icon-512.png'
 ];
 
 self.addEventListener('install', (e) => {
@@ -61,7 +61,7 @@ self.addEventListener('fetch', (e) => {
         e.respondWith(
             getTrackFromIDB(decodedId).then(record => {
                 if (!record || !record.blob) {
-                    return fetch(e.request); 
+                    return fetch(e.request);
                 }
 
                 const blob = record.blob;
@@ -99,7 +99,7 @@ self.addEventListener('fetch', (e) => {
 
     // 2. Standard Static Asset Caching
     if (e.request.method !== 'GET') return;
-    
+
     // Ignore external APIs or strictly dynamic logic
     if (e.request.url.includes('/api/') || e.request.url.includes('api.deezer.com')) {
         return;
