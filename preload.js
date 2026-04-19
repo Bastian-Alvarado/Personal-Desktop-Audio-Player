@@ -1,27 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// ── Firebase Auth + Electron compatibility fix ──────────────────────────────
-// Firebase Auth's signInWithPopup() throws auth/operation-not-supported-in-
-// this-environment when window.location.protocol is 'file:' (Electron default).
-// Patching Location.prototype.protocol so Firebase sees 'https:' passes the
-// check while leaving all other behaviour unchanged.
-try {
-    const desc = Object.getOwnPropertyDescriptor(Location.prototype, 'protocol');
-    if (desc && desc.get) {
-        Object.defineProperty(Location.prototype, 'protocol', {
-            get() {
-                const p = desc.get.call(this);
-                return p === 'file:' ? 'https:' : p;
-            },
-            configurable: true,
-            enumerable: true
-        });
-    }
-} catch(e) {
-    console.warn('[Preload] Location.prototype.protocol patch failed:', e);
-}
-
 contextBridge.exposeInMainWorld('electronAPI', {
+    openExternalPath: (url) => ipcRenderer.send('open-external', url),
+    onAuthDeepLink: (callback) => ipcRenderer.on('auth-deep-link', (event, url) => callback(url)),
+
     installCodecs: () => ipcRenderer.invoke('install-codecs'),
     
     // Window Controls

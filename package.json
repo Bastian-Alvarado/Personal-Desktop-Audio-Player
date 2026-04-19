@@ -23,6 +23,12 @@
       "createStartMenuShortcut": true,
       "shortcutName": "SimonRelays"
     },
+    "protocols": {
+      "name": "Simon Auth Protocol",
+      "schemes": [
+        "simon-auth"
+      ]
+    },
     "files": [
       "**/*",
       "!dist/**",

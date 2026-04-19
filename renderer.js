@@ -537,6 +537,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const googleBtn = document.getElementById('google-signin-btn');
     if (googleBtn) {
         googleBtn.addEventListener('click', async () => {
+            if (window.electronAPI) {
+                const webLoginUrl = 'https://bastian-alvarado.github.io/Personal-Desktop-Audio-Player/?auth_redirect=true';
+                window.electronAPI.openExternalPath(webLoginUrl);
+                return;
+            }
+
             try {
                 console.log('[Auth] Button clicked. _fbAuth:', window._fbAuth);
                 if (!window._fbAuth) { alert('Firebase Auth not initialized. Check console.'); return; }
@@ -547,6 +553,47 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch(err) {
                 console.error('[Auth] Error:', err);
                 alert('Sign in failed: ' + (err.message || err.code || JSON.stringify(err)));
+            }
+        });
+    }
+
+    // Capture OAuth Web Redirect logic if we are the web app being targeted
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('auth_redirect') === 'true' && !window.electronAPI) {
+        document.body.innerHTML = '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background:#0a0a0f; color:white; font-family:sans-serif;"><h3>Securely Authenticating...</h3><p style="color:#888;">Please confirm any Google popups.</p></div>';
+        try {
+            const provider = new firebase.auth.GoogleAuthProvider();
+            const result = await window._fbAuth.signInWithPopup(provider);
+            const idToken = result.credential.idToken;
+            const accessToken = result.credential.accessToken || '';
+            window.location.href = `simon-auth://login?idToken=${idToken}&accessToken=${accessToken}`;
+            
+            setTimeout(() => {
+                document.body.innerHTML = '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100vh; background:#0a0a0f; color:#4ade80; font-family:sans-serif;"><h2>Authentication successful!</h2><p>You can close this tab and return to the app.</p></div>';
+            }, 500);
+        } catch(e) {
+            document.body.innerHTML = `<div style="color:red; padding:20px; font-family:sans-serif;">Auth failed: ${e.message}</div>`;
+        }
+        return; // Halt regular app execution!
+    }
+
+    if (window.electronAPI) {
+        window.electronAPI.onAuthDeepLink(async (url) => {
+            console.log("Received deep link payload:", url);
+            try {
+                const rawUrl = new URL(url);
+                const params = new URLSearchParams(rawUrl.search);
+                const idToken = params.get('idToken');
+                const accessToken = params.get('accessToken');
+                
+                if (idToken) {
+                    const credential = firebase.auth.GoogleAuthProvider.credential(idToken, accessToken || null);
+                    await window._fbAuth.signInWithCredential(credential);
+                    console.log("Deep Link Auth Success!");
+                }
+            } catch(e) {
+                console.error("Deep Link Credential Error:", e);
+                alert("Auth Handoff Failed: " + e.message);
             }
         });
     }

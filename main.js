@@ -1,9 +1,17 @@
-const { app, BrowserWindow, session, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, session, ipcMain, dialog, shell } = require('electron');
 app.commandLine.appendSwitch('ignore-certificate-errors');
 const path = require('path');
 const fs = require('fs');
 const { protocol, net } = require('electron');
 const DiscordRPC = require('discord-rpc');
+
+app.setAsDefaultProtocolClient('simon-auth');
+
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+    app.quit();
+    return; // Exit if another instance is already running
+}
 
 let mainWindow;
 
@@ -182,30 +190,7 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
 
-    // Firebase Auth Google Sign-In popup handler.
-    // Two requirements:
-    //   1. Allow Google / Firebase auth URLs to open as a child BrowserWindow.
-    //   2. contextIsolation MUST be false for the popup so that window.opener
-    //      is non-null — Firebase's auth handler calls window.opener.postMessage()
-    //      to relay credentials back to the main window. With contextIsolation: true,
-    //      window.opener is null and the sign-in promise never resolves.
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        if (url.startsWith('https://accounts.google.com') || url.startsWith('https://simonrelays.firebaseapp.com')) {
-            return {
-                action: 'allow',
-                overrideBrowserWindowOptions: {
-                    width: 500,
-                    height: 650,
-                    title: 'Sign in with Google',
-                    webPreferences: {
-                        nodeIntegration: false,
-                        contextIsolation: false, // Required: lets window.opener.postMessage work
-                    }
-                }
-            };
-        }
-        return { action: 'deny' };
-    });
+    // Removed obsolete setWindowOpenHandler for Google Auth
 
     // Notify renderer of maximize/unmaximize
     mainWindow.on('maximize', () => mainWindow.webContents.send('window-state-changed', true));
@@ -227,6 +212,11 @@ app.whenReady().then(() => {
 
     // Window Controls
     ipcMain.on('window-minimize', () => mainWindow.minimize());
+    
+    // External Tools
+    ipcMain.on('open-external', (event, url) => {
+        shell.openExternal(url);
+    });
     ipcMain.on('window-maximize', () => {
         if (mainWindow.isMaximized()) mainWindow.unmaximize();
         else mainWindow.maximize();
@@ -254,6 +244,27 @@ app.whenReady().then(() => {
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+});
+
+app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // Someone tried to run a second instance, we should focus our window.
+    if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+    }
+    // Command line arguments on Windows/Linux usually contain the deep link url
+    const url = commandLine.find(arg => arg.startsWith('simon-auth://'));
+    if (url && mainWindow) {
+        mainWindow.webContents.send('auth-deep-link', url);
+    }
+});
+
+// macOS deep link handling
+app.on('open-url', (event, url) => {
+    event.preventDefault();
+    if (mainWindow) {
+        mainWindow.webContents.send('auth-deep-link', url);
+    }
 });
 
 app.on('window-all-closed', () => {
