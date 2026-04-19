@@ -4461,7 +4461,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function attemptResolve(apiUrl, trackId) {
         try {
-            const res = await fetch(`${apiUrl}/track/?id=${trackId}`);
+            const target = `${apiUrl}/track/?id=${trackId}`;
+            // Proxy through Cloudflare Worker to sync IP for stream tokens
+            const finalUrl = (!window.electronAPI) ? `${CORS_PROXY_URL}?url=${encodeURIComponent(target)}` : target;
+            const res = await fetch(finalUrl);
             if (!res.ok) return null;
             const data = await res.json();
             if (!data) return null;
@@ -4500,12 +4503,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!manifest) return null;
 
             if (isDash) {
-                // In PWA (browser), DASH is never usable: Shaka fetches segments from
-                // Tidal CDN (sp-ad-fa / lgf.audio.tidal.com) which CORS-blocks github.io
-                // regardless of quality (LOSSLESS DASH has the same problem as HI_RES DASH).
-                // Returning null lets the race fall through to the next quality/API.
-                if (!window.electronAPI) return null;
-                // Return the raw base64 or XML for dash-player to handle later (Electron only)
+                // Return the raw base64 or XML for dash-player to handle later
                 return { url: rawManifest, isDash: true };
             }
 
