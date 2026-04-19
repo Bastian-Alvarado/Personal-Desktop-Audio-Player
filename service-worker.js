@@ -1,4 +1,4 @@
-const CACHE_NAME = 'simonrelays-desktop-pwa-v4';
+const CACHE_NAME = 'simonrelays-desktop-pwa-v5';
 const DB_NAME = 'SimonOffline'; 
 const STORE_NAME = 'tracks';
 
