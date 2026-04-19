@@ -840,8 +840,37 @@ document.addEventListener('DOMContentLoaded', async () => {
              state.medium = getTidalImage(window.artistImageHashes[hashKey], '320x320');
              state.xl = getTidalImage(window.artistImageHashes[hashKey], '750x750');
         } else {
-             // Wait for potential background QQDL population
-             state.resolved = false;
+             try {
+                 const res = await fetch(`${qqdlTargetUrl}/search/?s=${encodeURIComponent(artistName)}`);
+                 if (res.ok) {
+                     const data = await res.json();
+                     const match = data?.data?.items?.find(t => t.artist && t.artist.name.toLowerCase() === artistName.toLowerCase());
+                     if (match && match.artist && match.artist.picture) {
+                          const newHash = match.artist.picture;
+                          window.artistImageHashes[artistName] = newHash;
+                          state.resolved = true;
+                          state.medium = getTidalImage(newHash, '320x320');
+                          state.xl = getTidalImage(newHash, '750x750');
+                          
+                          // Cache persistently in recentArtists
+                          try {
+                              let recent = JSON.parse(localStorage.getItem('recentArtists') || '[]');
+                              let updated = false;
+                              recent = recent.map(a => {
+                                  if (typeof a === 'object' && a.name === artistName && !a.picture) {
+                                      a.picture = newHash;
+                                      updated = true;
+                                  }
+                                  return a;
+                              });
+                              if (updated) localStorage.setItem('recentArtists', JSON.stringify(recent));
+                          } catch(e) {}
+                     }
+                 }
+             } catch(e) {
+                 console.warn("Failed to fetch artist image config dynamically", e);
+             }
+             if (!state.resolved) state.resolved = false;
         }
 
         state.pending = false;
@@ -1467,7 +1496,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         listContainer.innerHTML = '';
-        Object.keys(devices).forEach(id => {
+        
+        const activeDeviceIds = Object.keys(devices).filter(id => devices[id].online || id === deviceId);
+        
+        if (activeDeviceIds.length === 0) {
+            listContainer.innerHTML = '<div class="empty-state">No active devices found</div>';
+            return;
+        }
+
+        activeDeviceIds.forEach(id => {
             const dev = devices[id];
             const isMe = id === deviceId;
             const isMaster = dev.online && masterDeviceId === id;
