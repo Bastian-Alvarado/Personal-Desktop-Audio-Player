@@ -416,6 +416,27 @@ const firstSuccess = (promises) => {
     });
 };
 
+// Route all QQDL/Tidal API calls through Electron's main process when available.
+// This bypasses Chromium CORS enforcement and Tidal CDN IP-based auth rejection.
+// Falls back to browser fetch for PWA usage.
+async function apiFetch(url, timeoutMs = 8000) {
+    if (window.electronAPI && window.electronAPI.proxyFetch) {
+        return window.electronAPI.proxyFetch(url); // Node.js net.fetch, no CORS
+    }
+    // PWA fallback
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(id);
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (e) {
+        clearTimeout(id);
+        return null;
+    }
+}
+
 async function smartRaceFetch(path) {
     const tryAPIs = (availableCloudApis && availableCloudApis.length > 0) 
         ? [qqdlTargetUrl, ...availableCloudApis.filter(a => a !== qqdlTargetUrl).slice(0, 2)] 
@@ -426,12 +447,7 @@ async function smartRaceFetch(path) {
 
     const result = await firstSuccess(uniqueAPIs.map(async (api) => {
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 7000); // 7s timeout
-            const res = await fetch(`${api}${path}`, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (!res.ok) return null;
-            const data = await res.json();
+            const data = await apiFetch(`${api}${path}`);
             return data ? { api, data } : null;
         } catch (e) {
             return null;
@@ -4337,20 +4353,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function attemptResolve(apiUrl, trackId) {
         try {
-            const res = await fetch(`${apiUrl}/track/?id=${trackId}`);
-            if (!res.ok) return null;
-            const data = await res.json();
+            const data = await apiFetch(`${apiUrl}/track/?id=${trackId}`);
             if (!data) return null;
 
-            // 1. Direct URL check (Fast path)
-            let directUrl = data.url || (data.data && data.data.url);
-            if (directUrl) return { url: directUrl, isDash: false };
+            // If QQDL returns a preview presentation, bail — Stage 2 will retry with quality params
+            // NOTE: FULL DASH manifests are also blocked by Tidal CDN (CORS + IP-auth).
+            // data.url (preview pre-signed URL) is the only thing playable from the browser
+            // until we implement the main-process proxy (Bug 2).
+            const assetPresentation = data.data && data.data.assetPresentation;
+            if (assetPresentation === 'PREVIEW') {
+                // Last resort: return the preview URL so we play something rather than nothing
+                const previewUrl = data.url || (data.data && data.data.url);
+                return previewUrl ? { url: previewUrl, isDash: false } : null;
+            }
 
-            // 2. Find the manifest field
+            // Skip data.url — it's the 30s preview clip. Always go through the manifest.
+            // apiFetch() routes through the Electron main process (net.fetch), bypassing
+            // Chromium CORS and Tidal CDN's IP-auth rejection on full track segments.
             let rawManifest = data.manifest || (data.data && data.data.manifest);
             if (!rawManifest) return null;
 
-            // 3. Decode if it's a string (Base64), or use directly if it's an object
             let manifest;
             let isDash = (data.data && data.data.manifestMimeType === 'application/dash+xml');
 
@@ -4359,24 +4381,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const decoded = atob(rawManifest);
                     if (decoded.trim().startsWith('<?xml') || decoded.trim().startsWith('<MPD')) {
                         isDash = true;
-                        manifest = decoded; // Keep XML string
+                        manifest = decoded;
                     } else {
                         manifest = JSON.parse(decoded);
                     }
                 } catch (e) {
-                    // Not base64 or not JSON, maybe it's just a direct URL string?
                     if (rawManifest.startsWith('http')) return { url: rawManifest, isDash: false };
                     return null;
                 }
             } else {
-                manifest = rawManifest; // Already a JSON object
+                manifest = rawManifest;
             }
 
-            // 4. Extract URL from manifest with fallback keys
             if (!manifest) return null;
 
             if (isDash) {
-                // Return the raw base64 or XML for dash-player to handle later
                 return { url: rawManifest, isDash: true };
             }
 

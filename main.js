@@ -26,6 +26,25 @@ ipcMain.handle('get-downloaded-list', () => {
     return getDownloadsMetadata();
 });
 
+// Proxy API fetches through the main process so they:
+//  1. Bypass Chromium CORS enforcement (Tidal CDN blocks browser origins)
+//  2. Send a generic browser User-Agent (not the Electron/Chrome UA)
+//  3. Are not IP-flagged as browser requests by QQDL rate-limiter
+ipcMain.handle('proxy-fetch', async (event, url) => {
+    try {
+        const response = await net.fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, */*'
+            }
+        });
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (e) {
+        console.warn('[proxy-fetch] Failed for', url, e.message);
+        return null;
+    }
+});
 
 
 ipcMain.handle('download-track', async (event, { url, originalTrackingUrl, metadata, coverUrl, lyrics }) => {

@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteOfflineTrack: (url) => ipcRenderer.invoke('delete-offline-track', url),
     onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (event, data) => callback(data)),
 
+    // API Proxy — routes fetches through main process (bypasses CORS & Tidal CDN IP-auth)
+    proxyFetch: (url) => ipcRenderer.invoke('proxy-fetch', url),
+
 
 
 
