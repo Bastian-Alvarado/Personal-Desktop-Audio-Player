@@ -114,8 +114,11 @@ self.addEventListener('fetch', (e) => {
                 });
                 return response;
             })
-            .catch(() => {
-                return caches.match(e.request);
+            .catch(async () => {
+                const cached = await caches.match(e.request);
+                if (cached) return cached;
+                // Avoid returning 'undefined' to respondWith() which causes a TypeError
+                return new Response('Network error or not in cache', { status: 404 });
             })
     );
 });

@@ -4407,9 +4407,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // until we implement the main-process proxy (Bug 2).
             const assetPresentation = data.data && data.data.assetPresentation;
             if (assetPresentation === 'PREVIEW') {
-                // Last resort: return the preview URL so we play something rather than nothing
-                const previewUrl = data.url || (data.data && data.data.url);
-                return previewUrl ? { url: previewUrl, isDash: false } : null;
+                console.warn(`[Resolve] Mirror ${apiUrl} offered PREVIEW only. Rejecting for fallback...`);
+                return null; // Force fallback to other mirrors or qualities
             }
 
             // Skip data.url — it's the 30s preview clip. Always go through the manifest.
