@@ -46,6 +46,29 @@ ipcMain.handle('proxy-fetch', async (event, url) => {
     }
 });
 
+// Binary proxy — used by the Shaka Player network filter to route DASH segment
+// requests (audio/*.m4a, init segments, etc.) through net.fetch so Tidal's CDN
+// cannot reject them via CORS or IP-based browser detection.
+ipcMain.handle('proxy-fetch-buffer', async (event, url) => {
+    try {
+        const response = await net.fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*'
+            }
+        });
+        if (!response.ok) {
+            console.warn('[proxy-fetch-buffer] Non-OK status', response.status, 'for', url);
+            return null;
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        return Buffer.from(arrayBuffer);
+    } catch (e) {
+        console.warn('[proxy-fetch-buffer] Failed for', url, e.message);
+        return null;
+    }
+});
+
 
 ipcMain.handle('download-track', async (event, { url, originalTrackingUrl, metadata, coverUrl, lyrics }) => {
     const trackingId = originalTrackingUrl || url;

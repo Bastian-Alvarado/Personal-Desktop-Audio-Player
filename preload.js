@@ -21,6 +21,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // API Proxy — routes fetches through main process (bypasses CORS & Tidal CDN IP-auth)
     proxyFetch: (url) => ipcRenderer.invoke('proxy-fetch', url),
 
+    // Binary Proxy — routes DASH segment fetches (audio data) through main process.
+    // Shaka Player uses the browser's own network stack internally, which Tidal's CDN
+    // rejects via CORS/IP-auth. This lets us intercept those requests via a Shaka
+    // network filter and re-issue them from the Node.js side instead.
+    proxyFetchBuffer: (url) => ipcRenderer.invoke('proxy-fetch-buffer', url),
+
+
 
 
 

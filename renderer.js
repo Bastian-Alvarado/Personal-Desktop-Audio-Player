@@ -920,6 +920,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     let shakaPlayerInstance = null;
     let shakaStorageInstance = null;
 
+    // Registers a Shaka network request filter that proxies all external HTTP
+    // requests through the Electron main process (net.fetch) when running as a
+    // desktop app. This prevents Tidal's CDN from rejecting DASH segment fetches
+    // with CORS errors, because those requests now originate from Node.js rather
+    // than from Chromium's renderer process.
+    function installElectronNetworkFilter(player) {
+        if (!window.electronAPI || !window.electronAPI.proxyFetchBuffer) return;
+
+        player.getNetworkingEngine().registerRequestFilter(async (type, request) => {
+            // Only intercept segment and manifest requests that hit external HTTP URLs.
+            // Skip data: URIs (base64 manifests we built ourselves) and offline: URIs.
+            const url = request.uris[0];
+            if (!url || !url.startsWith('http')) return;
+
+            try {
+                const buffer = await window.electronAPI.proxyFetchBuffer(url);
+                if (!buffer) {
+                    throw new Error(`[Shaka Proxy] Empty response for ${url}`);
+                }
+                // Shaka expects a Uint8Array. IPC serialises Buffer as a plain object
+                // with a 'data' array — handle both cases.
+                const uint8 = buffer instanceof Uint8Array
+                    ? buffer
+                    : new Uint8Array(buffer.data || buffer);
+
+                // Fulfil the request in-place: replace the URI list with a data URI
+                // containing the already-fetched bytes so Shaka doesn't re-fetch.
+                const base64 = btoa(String.fromCharCode(...uint8));
+                request.uris = [`data:application/octet-stream;base64,${base64}`];
+            } catch (e) {
+                console.warn('[Shaka Proxy] Filter failed, letting Shaka try directly:', e.message);
+                // Fall through — Shaka will attempt the original URL, which may fail,
+                // but at least we won't silently swallow the error.
+            }
+        });
+
+        console.log('[Shaka] Electron network proxy filter installed.');
+    }
+
     async function ensureDashPlayer() {
         if (window.shaka && shakaPlayerInstance && shakaStorageInstance) return true;
         
@@ -927,7 +966,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             shakaLibLoaded = true;
             shaka.polyfill.installAll();
             if (shaka.Player.isBrowserSupported()) {
-                if (!shakaPlayerInstance) shakaPlayerInstance = new shaka.Player(audioPlayer);
+                if (!shakaPlayerInstance) {
+                    shakaPlayerInstance = new shaka.Player(audioPlayer);
+                    installElectronNetworkFilter(shakaPlayerInstance);
+                }
                 if (!shakaStorageInstance) shakaStorageInstance = new shaka.offline.Storage(shakaPlayerInstance);
                 return true;
             }
@@ -943,7 +985,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (shaka.Player.isBrowserSupported()) {
                     shakaPlayerInstance = new shaka.Player(audioPlayer);
                     shakaStorageInstance = new shaka.offline.Storage(shakaPlayerInstance);
-                    
+
+                    // Install proxy filter before any load() call
+                    installElectronNetworkFilter(shakaPlayerInstance);
+
                     shakaPlayerInstance.addEventListener('error', (event) => {
                         console.error('Shaka Player error', event.detail);
                     });
